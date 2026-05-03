@@ -88,7 +88,15 @@ jobs:
           if (-not $env:CLIENT_SECRET_JSON) {
             throw "CLIENT_SECRET_JSON repo secret is not set"
           }
-          $env:CLIENT_SECRET_JSON | Out-File -Encoding ascii -NoNewline tools\client_secret.json
+          # Defensively strip a leading BOM (the secret value may have picked one
+          # up if it was uploaded via Get-Content -Raw on a BOM-tagged file).
+          $content = $env:CLIENT_SECRET_JSON.TrimStart([char]0xFEFF, [char]0xFFFE)
+          # Use UTF8 without BOM so we never write one back ourselves.
+          New-Item -ItemType Directory -Path tools -Force | Out-Null
+          [System.IO.File]::WriteAllText("$PWD\tools\client_secret.json", $content, (New-Object System.Text.UTF8Encoding $false))
+          # Verify it parses as JSON before letting the build proceed.
+          $null = $content | ConvertFrom-Json
+          Write-Host "client_secret.json restored OK ($($content.Length) chars)"
 
       - name: Build
         shell: cmd
