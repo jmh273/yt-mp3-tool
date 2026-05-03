@@ -85,7 +85,7 @@ async def test_logout_without_token(client):
 # ── /auth/login ───────────────────────────────────────────────────────────────
 async def test_login_missing_client_secret(client, monkeypatch):
     """缺少 client_secret.json 時回傳 500"""
-    monkeypatch.setattr(main, "CLIENT_SECRET_FILE", pathlib.Path("/nonexistent/client_secret.json"))
+    monkeypatch.setattr(main, "_find_client_secret", lambda: None)
     async with client as c:
         r = await c.get("/auth/login")
     assert r.status_code == 500
@@ -104,7 +104,7 @@ async def test_login_starts_oauth_thread(client, tmp_path, monkeypatch):
             "token_uri": "https://oauth2.googleapis.com/token",
         }
     }))
-    monkeypatch.setattr(main, "CLIENT_SECRET_FILE", secret)
+    monkeypatch.setattr(main, "_find_client_secret", lambda: secret)
 
     fake_creds = MagicMock()
     fake_creds.to_json.return_value = json.dumps({"token": "t"})

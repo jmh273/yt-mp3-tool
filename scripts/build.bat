@@ -1,0 +1,94 @@
+@echo off
+setlocal enabledelayedexpansion
+REM ============================================================================
+REM build.bat - produce a self-contained Windows zip release of yt-mp3-tool.
+REM
+REM Steps:
+REM   1. Compute version from `git describe --tags --abbrev=0` (strip leading v)
+REM      Override by setting VERSION env var (CI passes the tag explicitly).
+REM   2. Build frontend SPA (npm run build -> frontend/dist/)
+REM   3. Stage SPA into backend/static/
+REM   4. Run PyInstaller (yt-mp3-tool.spec -> backend/dist/yt-mp3-tool/)
+REM   5. Stage ffmpeg.exe + mp3gain.exe + client_secret.json + update.bat
+REM   6. Zip -> dist/yt-mp3-tool-v<VERSION>-windows-x64.zip
+REM
+REM Required tools on PATH: git, node, npm, python (with pyinstaller installed)
+REM Required files in tools/: ffmpeg.exe, mp3gain.exe, client_secret.json
+REM ============================================================================
+
+cd /d "%~dp0\.."
+set REPO_ROOT=%CD%
+set BACKEND=%REPO_ROOT%\backend
+set FRONTEND=%REPO_ROOT%\frontend
+set TOOLS=%REPO_ROOT%\tools
+set DIST=%REPO_ROOT%\dist
+
+REM --- 1. Version ---------------------------------------------------------------
+if defined VERSION (
+    echo [build] Using VERSION from env: !VERSION!
+) else (
+    for /f "tokens=*" %%i in ('git describe --tags --abbrev^=0 2^>nul') do set TAG=%%i
+    if "!TAG!"=="" (
+        echo [build] No git tag found; defaulting VERSION=0.0.0-dev
+        set VERSION=0.0.0-dev
+    ) else (
+        set VERSION=!TAG:v=!
+    )
+)
+echo [build] VERSION=!VERSION!
+> "%BACKEND%\_version.txt" echo !VERSION!
+
+REM --- 2. Verify required bundled tools -----------------------------------------
+for %%F in (ffmpeg.exe mp3gain.exe client_secret.json) do (
+    if not exist "%TOOLS%\%%F" (
+        echo [build] ERROR: missing %TOOLS%\%%F
+        echo [build] Place ffmpeg.exe, mp3gain.exe, and client_secret.json in tools/ before building.
+        exit /b 1
+    )
+)
+
+REM --- 3. Frontend build --------------------------------------------------------
+REM Note: using build-only (skips vue-tsc type-check). The full `npm run build`
+REM also runs type-check which currently fails on some pre-existing test-file
+REM type issues unrelated to the production bundle. vite build itself is fine.
+echo [build] Building frontend...
+pushd "%FRONTEND%"
+call npm ci || (popd & exit /b 1)
+call npm run build-only || (popd & exit /b 1)
+popd
+
+REM Stage SPA into backend/static/
+if exist "%BACKEND%\static" rmdir /s /q "%BACKEND%\static"
+xcopy "%FRONTEND%\dist" "%BACKEND%\static\" /e /i /q || exit /b 1
+
+REM --- 4. PyInstaller -----------------------------------------------------------
+echo [build] Running PyInstaller...
+pushd "%BACKEND%"
+if exist build rmdir /s /q build
+if exist dist rmdir /s /q dist
+python -m PyInstaller "..\yt-mp3-tool.spec" --noconfirm --clean || (popd & exit /b 1)
+popd
+
+set BUNDLE=%BACKEND%\dist\yt-mp3-tool
+
+REM --- 5. Stage extras into the bundle ------------------------------------------
+echo [build] Staging extras...
+copy /y "%TOOLS%\ffmpeg.exe"          "%BUNDLE%\" >nul || exit /b 1
+copy /y "%TOOLS%\mp3gain.exe"         "%BUNDLE%\" >nul || exit /b 1
+copy /y "%TOOLS%\client_secret.json"  "%BUNDLE%\" >nul || exit /b 1
+copy /y "%REPO_ROOT%\scripts\update.bat" "%BUNDLE%\" >nul || exit /b 1
+if exist "%REPO_ROOT%\docs\README-DEPLOY.md" (
+    copy /y "%REPO_ROOT%\docs\README-DEPLOY.md" "%BUNDLE%\" >nul
+)
+
+REM --- 6. Zip -------------------------------------------------------------------
+if not exist "%DIST%" mkdir "%DIST%"
+set ZIP=%DIST%\yt-mp3-tool-v!VERSION!-windows-x64.zip
+if exist "%ZIP%" del "%ZIP%"
+echo [build] Zipping -^> %ZIP%
+powershell -NoProfile -Command "Compress-Archive -Path '%BUNDLE%\*' -DestinationPath '%ZIP%' -Force" || exit /b 1
+
+echo.
+echo [build] Done. Artifact: %ZIP%
+for %%I in ("%ZIP%") do echo [build] Size: %%~zI bytes
+exit /b 0

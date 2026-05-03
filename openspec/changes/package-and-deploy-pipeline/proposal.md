@@ -12,8 +12,8 @@
 - `load_settings()` 加寬容讀法：超出新範圍 / 型別不符的舊欄位自動回退到預設值（避免 schema 演化把舊機器的啟動弄壞）。
 - 加 `scripts/build.bat`：清乾淨 → `npm run build` → 拷貝 `dist/` 到 backend/static → PyInstaller → 把 ffmpeg.exe / mp3gain.exe / client_secret.json / `update.bat` / README 一起 zip 起來。
 - 加 `.github/workflows/release.yml`：tag 推到 GitHub 時，Windows runner 跑 `build.bat` → 用 `gh release create` 把 zip upload 為 release asset。
-- 加 `scripts/update.bat`（拷到目標 PC 用）：用 `gh` 或 `Invoke-WebRequest` 從**私有** release 拉 zip → 停止背景程式 → 解壓覆蓋 → 重啟。需要使用者環境變數 `GH_TOKEN`（每台 PC 一次性設定）。
-- 加 `docs/DEPLOY.md`：第一次裝一台新 PC 的步驟（裝 GH PAT、解壓初始版、之後都用 update.bat）。
+- 加 `scripts/update.bat`（拷到目標 PC 用）：用 `gh` CLI（每台 PC 一次性 `gh auth login`）查最新 release tag、版號比對、`gh release download` 拉 zip → 停止背景程式 → 解壓覆蓋 → 重啟。
+- 加 `docs/DEPLOY.md`：第一次裝一台新 PC 的步驟（裝 `gh` CLI、`gh auth login`、解壓初始版、之後都用 update.bat）。
 - 不動：所有現有功能（下載 / 正規化 / 重新命名）、開發流程（`npm run dev` + `uvicorn --reload` 仍 100% 可用）、user data 路徑。
 
 ## Capabilities
@@ -42,5 +42,5 @@
   - `docs/DEPLOY.md`
 - **新依賴**：`pyinstaller`（dev only，不進 runtime requirements）
 - **Repo 設定**：repo 必須改為私有（已決定）；release artifact 包含 `client_secret.json`（私有 repo 內容）
-- **目標 PC 一次性設定**：環境變數 `GH_TOKEN` = fine-grained PAT（這個 repo 的 `contents: read`）
+- **目標 PC 一次性設定**：`winget install GitHub.cli` + `gh auth login`（取代原本 PAT 規劃，省去手動建 token / 過期管理）
 - **不影響**：開發流程不變、所有既有測試不變、API 形狀不變

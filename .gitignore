@@ -14,7 +14,11 @@ frontend/test-report/
 # Build artifacts
 dist/
 build/
+backend/static/
 *.spec.bak
+
+# Claude harness runtime state
+.claude/scheduled_tasks.lock
 
 # IDE / OS
 .vscode/
@@ -29,9 +33,10 @@ client_secret.json
 **/token.json
 *.env
 
-# 工具二進位（CI 會自己下載）
-tools/ffmpeg.exe
-tools/mp3gain.exe
+# 工具二進位（CI 會自己下載；本地 build 才放）
+tools/*
+!tools/README.md
+!tools/.gitkeep
 
 # UI 測試輸出
 ui-tests/screenshots/

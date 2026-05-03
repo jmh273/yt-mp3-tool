@@ -3,6 +3,7 @@ import json
 import os
 import pathlib
 import shutil
+import sys
 from contextlib import asynccontextmanager
 from typing import AsyncGenerator
 
@@ -11,17 +12,64 @@ import yt_dlp
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
+from fastapi.staticfiles import StaticFiles
 from google.auth.transport.requests import Request as GoogleRequest
 from google.oauth2.credentials import Credentials
 from google_auth_oauthlib.flow import InstalledAppFlow
 from googleapiclient.discovery import build
 from pydantic import BaseModel
 
+
+# ── Bundle / dev path resolution ──────────────────────────────────────────────
+def _is_frozen() -> bool:
+    return getattr(sys, "frozen", False)
+
+
+def _resource_path(name: str) -> pathlib.Path:
+    """Locate a resource by name.
+
+    Frozen (PyInstaller onedir/onefile): try the bundle's data dir first
+    (sys._MEIPASS = `_internal/` in onedir; a temp dir in onefile), then fall
+    back to the exe's directory (where build.bat drops external assets like
+    ffmpeg.exe / client_secret.json).
+    Dev: next to backend/main.py.
+    """
+    if _is_frozen():
+        meipass = getattr(sys, "_MEIPASS", None)
+        if meipass:
+            candidate = pathlib.Path(meipass) / name
+            if candidate.exists():
+                return candidate
+        return pathlib.Path(sys.executable).parent / name
+    return pathlib.Path(__file__).parent / name
+
+
+def _setup_bundled_path() -> None:
+    """In a frozen bundle, prepend the exe's directory to PATH so that bundled
+    ffmpeg.exe / mp3gain.exe are picked up by shutil.which() and subprocess calls."""
+    if _is_frozen():
+        bundle_dir = str(pathlib.Path(sys.executable).parent)
+        os.environ["PATH"] = bundle_dir + os.pathsep + os.environ.get("PATH", "")
+
+
+_setup_bundled_path()
+
+
+def _find_client_secret() -> pathlib.Path | None:
+    """Look for client_secret.json next to the exe (bundle) first, then under backend/ (dev)."""
+    bundle_loc = _resource_path("client_secret.json")
+    if bundle_loc.exists():
+        return bundle_loc
+    dev_loc = pathlib.Path(__file__).parent / "client_secret.json"
+    if dev_loc.exists():
+        return dev_loc
+    return None
+
+
 # ── 路徑設定 ──────────────────────────────────────────────────────────────────
 CONFIG_DIR = pathlib.Path.home() / ".yt-mp3-tool"
 TOKEN_FILE = CONFIG_DIR / "token.json"
 SETTINGS_FILE = CONFIG_DIR / "settings.json"
-CLIENT_SECRET_FILE = pathlib.Path(__file__).parent / "client_secret.json"
 
 SCOPES = ["https://www.googleapis.com/auth/youtube"]
 REDIRECT_URI = "http://localhost:8000/auth/callback"
@@ -41,6 +89,19 @@ MP3GAIN_REFERENCE_DB = 89.0  # mp3gain default target = ReplayGain reference
 CONFIG_DIR.mkdir(exist_ok=True)
 
 
+def _read_version() -> str:
+    vfile = _resource_path("_version.txt")
+    if vfile.exists():
+        try:
+            return vfile.read_text(encoding="utf-8").strip() or "0.0.0-dev"
+        except OSError:
+            return "0.0.0-dev"
+    return "0.0.0-dev"
+
+
+__version__ = _read_version()
+
+
 @asynccontextmanager
 async def lifespan(_app: FastAPI):
     if shutil.which("ffmpeg") is None:
@@ -53,10 +114,11 @@ async def lifespan(_app: FastAPI):
         result = subprocess.run(["ffmpeg", "-version"], capture_output=True, text=True)
         version_line = result.stdout.splitlines()[0] if result.stdout else "unknown"
         print(f"[OK] ffmpeg 已就緒：{version_line}")
+    print(f"[OK] yt-mp3-tool v{__version__}")
     yield
 
 
-app = FastAPI(title="YT-MP3 Tool", lifespan=lifespan)
+app = FastAPI(title="YT-MP3 Tool", version=__version__, lifespan=lifespan)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["http://localhost:5173"],
@@ -159,10 +221,36 @@ def enhance_and_filter_videos(youtube, videos: list[dict]) -> list[dict]:
                 
     return [v for v in videos if v in valid_videos]
 
+_SETTINGS_RANGES = {
+    "videos_per_channel": (int, 1, 20),
+    "latest_hours": (int, 1, 168),
+    "min_duration_minutes": (int, 0, 10000),
+    "max_duration_minutes": (int, 1, 10000),
+    "normalize_target_db": ((int, float), 80.0, 100.0),
+    "output_path": (str, None, None),
+}
+
+
 def load_settings() -> dict:
+    """Tolerant load: legacy / out-of-range / wrong-type values for known keys are
+    silently reset to defaults; unknown keys are preserved untouched."""
+    raw: dict = {}
     if SETTINGS_FILE.exists():
-        return {**DEFAULT_SETTINGS, **json.loads(SETTINGS_FILE.read_text())}
-    return DEFAULT_SETTINGS.copy()
+        try:
+            raw = json.loads(SETTINGS_FILE.read_text(encoding="utf-8"))
+            if not isinstance(raw, dict):
+                raw = {}
+        except (json.JSONDecodeError, OSError):
+            raw = {}
+    merged = {**DEFAULT_SETTINGS, **raw}
+    for key, (expected_type, lo, hi) in _SETTINGS_RANGES.items():
+        value = merged.get(key)
+        if not isinstance(value, expected_type):
+            merged[key] = DEFAULT_SETTINGS[key]
+            continue
+        if lo is not None and hi is not None and not (lo <= value <= hi):
+            merged[key] = DEFAULT_SETTINGS[key]
+    return merged
 
 
 def save_settings(data: dict):
@@ -199,15 +287,16 @@ def auth_login():
     使用 InstalledAppFlow.run_local_server() 在背景執行授權流程。
     Google 建議 Desktop App 使用此方式，自動管理 localhost redirect URI。
     """
-    if not CLIENT_SECRET_FILE.exists():
+    client_secret = _find_client_secret()
+    if client_secret is None:
         raise HTTPException(
             status_code=500,
-            detail="找不到 client_secret.json，請先從 GCP 下載並放至 backend/ 資料夾",
+            detail="找不到 client_secret.json — 請放到安裝目錄（exe 同目錄）或 backend/ 後重新啟動",
         )
 
     def _do_oauth():
         flow = InstalledAppFlow.from_client_secrets_file(
-            str(CLIENT_SECRET_FILE), scopes=SCOPES
+            str(client_secret), scopes=SCOPES
         )
         # run_local_server 自動啟動本機 HTTP server、開啟瀏覽器、等待 callback
         creds = flow.run_local_server(
@@ -850,3 +939,15 @@ async def normalize_progress_sse(task_id: str):
             await asyncio.sleep(0.5)
 
     return StreamingResponse(event_stream(), media_type="text/event-stream")
+
+
+# ── Version endpoint ──────────────────────────────────────────────────────────
+@app.get("/version")
+def version():
+    return {"version": __version__}
+
+
+# ── SPA static mount (LAST: matches when no API route did) ───────────────────
+_static_dir = _resource_path("static")
+if _static_dir.is_dir():
+    app.mount("/", StaticFiles(directory=str(_static_dir), html=True), name="spa")

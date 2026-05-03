@@ -1,7 +1,7 @@
 <template>
   <div class="home">
     <header>
-      <h1>YT → MP3</h1>
+      <h1>YT → MP3 <span v-if="version" class="version">v{{ version }}</span></h1>
       <div class="header-actions">
         <router-link to="/settings">設定</router-link>
         <button @click="auth.logout">登出</button>
@@ -121,6 +121,7 @@ const channels = ref<Channel[]>([])
 const searchQuery = ref('')
 const loading = ref(true)
 const error = ref('')
+const version = ref('')
 const selectedChannelId = ref<string | null>(null)
 const activeView = ref<'none' | 'channel' | 'latest'>('none')
 const activeRightTab = ref<'download' | 'normalize'>('download')
@@ -134,6 +135,9 @@ const filteredChannels = computed(() => {
 })
 
 onMounted(async () => {
+  apiGet<{ version: string }>('/version')
+    .then((d) => { version.value = d.version })
+    .catch(() => { /* version 是輔助資訊，失敗不影響主流程 */ })
   try {
     const data = await apiGet<{ channels: Channel[] }>('/subscriptions')
     channels.value = data.channels
@@ -201,6 +205,7 @@ header {
   flex-shrink: 0;
 }
 h1 { margin: 0; font-size: 1.2rem; }
+.version { font-size: 0.7rem; color: #999; font-weight: normal; margin-left: 0.4rem; }
 .header-actions { display: flex; gap: 1rem; align-items: center; }
 .header-actions a { text-decoration: none; color: #333; font-size: 0.9rem; }
 .header-actions button { background: none; border: 1px solid #ccc; padding: 0.25rem 0.6rem; border-radius: 4px; cursor: pointer; font-size: 0.9rem; }

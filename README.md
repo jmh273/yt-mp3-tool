@@ -81,3 +81,14 @@ npm run dev
 - 本工具僅供個人使用
 - 需定期更新 yt-dlp：`pip install -U yt-dlp`
 - 如遇下載失敗，通常是 yt-dlp 版本過舊或該影片有版權限制
+
+## 部署到其他 Windows PC
+
+開發在這個 repo 內進行（`start.bat` / `npm run dev` + `uvicorn --reload`）。
+要把工具裝到另一台 Windows，**不需要** Python / Node — 走 release zip 路線：
+
+1. 在這台開發機打 git tag：`git tag v0.5.0 && git push --tags`
+2. GitHub Actions 自動 build → 上傳 release zip
+3. 在目標 PC 跑一次 `gh auth login`，之後每次只要 `update.bat`
+
+完整步驟請看 [docs/DEPLOY.md](docs/DEPLOY.md)。

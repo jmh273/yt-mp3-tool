@@ -156,3 +156,57 @@ async def test_put_settings_normalize_target_db_too_low(client):
     async with client as c:
         r = await c.put("/settings", json={"normalize_target_db": 75.0})
     assert r.status_code == 422
+
+
+# ── Tolerant load_settings ───────────────────────────────────────────────────
+def test_load_settings_resets_legacy_lufs_value():
+    """舊版 LUFS = -14（在新版 dB SPL 80–100 範圍外）→ 載入時 reset 成預設 89.0"""
+    main.SETTINGS_FILE.parent.mkdir(parents=True, exist_ok=True)
+    main.SETTINGS_FILE.write_text(json.dumps({"normalize_target_db": -14.0}))
+    s = main.load_settings()
+    assert s["normalize_target_db"] == 89.0
+
+
+def test_load_settings_resets_wrong_type():
+    """videos_per_channel 是字串 → reset 成預設"""
+    main.SETTINGS_FILE.parent.mkdir(parents=True, exist_ok=True)
+    main.SETTINGS_FILE.write_text(json.dumps({"videos_per_channel": "five"}))
+    s = main.load_settings()
+    assert s["videos_per_channel"] == 5
+
+
+def test_load_settings_preserves_unknown_legacy_key():
+    """未知 key（早期版本留下的）應保留在 dict 中、不報錯"""
+    main.SETTINGS_FILE.parent.mkdir(parents=True, exist_ok=True)
+    main.SETTINGS_FILE.write_text(json.dumps({"removed_old_setting": "something"}))
+    s = main.load_settings()
+    assert s["removed_old_setting"] == "something"
+
+
+def test_load_settings_passes_through_in_range_value():
+    """合法值原樣回傳，不亂改"""
+    main.SETTINGS_FILE.parent.mkdir(parents=True, exist_ok=True)
+    main.SETTINGS_FILE.write_text(json.dumps({"normalize_target_db": 92.0}))
+    s = main.load_settings()
+    assert s["normalize_target_db"] == 92.0
+
+
+def test_load_settings_handles_corrupt_json():
+    """設定檔內容不是合法 JSON → 全部 reset 成預設、不報錯"""
+    main.SETTINGS_FILE.parent.mkdir(parents=True, exist_ok=True)
+    main.SETTINGS_FILE.write_text("{ broken json")
+    s = main.load_settings()
+    assert s["normalize_target_db"] == 89.0
+    assert s["videos_per_channel"] == 5
+
+
+# ── /version endpoint ────────────────────────────────────────────────────────
+async def test_version_endpoint(client):
+    """GET /version 回傳 {version: __version__}"""
+    async with client as c:
+        r = await c.get("/version")
+    assert r.status_code == 200
+    body = r.json()
+    assert "version" in body
+    # 在 dev 環境（沒有 _version.txt）應該是 0.0.0-dev；CI build 會是真實版號
+    assert body["version"] == main.__version__
