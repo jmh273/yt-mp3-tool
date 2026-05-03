@@ -1,6 +1,6 @@
 import { defineStore } from 'pinia'
 import { ref } from 'vue'
-import { apiGet, apiPost } from '@/api'
+import { apiGet, apiPost, API_BASE } from '@/api'
 
 export interface NormalizeFile {
   filename: string
@@ -87,7 +87,7 @@ export const useNormalizeStore = defineStore('normalize', () => {
   }
 
   function subscribeProgress(id: string) {
-    const es = new EventSource(`/api/normalize/progress/${id}`)
+    const es = new EventSource(`${API_BASE}/normalize/progress/${id}`)
     es.onmessage = (e) => {
       const data = JSON.parse(e.data)
       if (data.items) {

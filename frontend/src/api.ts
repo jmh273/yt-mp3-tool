@@ -1,4 +1,9 @@
-const BASE = '/api'
+// In dev, Vite serves the SPA on :5173 and proxies /api/* to the backend on
+// :8000 (stripping /api). In a bundled exe the SPA is served from the same
+// origin as the backend (default :8000), so the /api prefix would 404 — call
+// routes at their real path instead. Detect by current port.
+export const API_BASE = window.location.port === '5173' ? '/api' : ''
+const BASE = API_BASE
 
 export async function apiGet<T>(path: string): Promise<T> {
   const r = await fetch(`${BASE}${path}`)

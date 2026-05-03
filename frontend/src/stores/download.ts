@@ -1,6 +1,6 @@
 import { defineStore } from 'pinia'
 import { ref } from 'vue'
-import { apiPost } from '@/api'
+import { apiPost, API_BASE } from '@/api'
 
 export interface VideoItem {
   video_id: string
@@ -77,7 +77,7 @@ export const useDownloadStore = defineStore('download', () => {
     })
     taskId.value = task_id
 
-    const es = new EventSource(`/api/download/progress/${task_id}`)
+    const es = new EventSource(`${API_BASE}/download/progress/${task_id}`)
     es.onmessage = (e) => {
       const data = JSON.parse(e.data)
       if (data.items) {
