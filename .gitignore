@@ -1,0 +1,44 @@
+# Python
+__pycache__/
+*.pyc
+*.pyo
+.pytest_cache/
+backend/test-report.html
+backend/_version.txt
+
+# Node
+frontend/node_modules/
+frontend/dist/
+frontend/test-report/
+
+# Build artifacts
+dist/
+build/
+*.spec.bak
+
+# IDE / OS
+.vscode/
+.idea/
+*.swp
+.DS_Store
+Thumbs.db
+
+# 機密：絕對不能進 repo
+backend/client_secret.json
+client_secret.json
+**/token.json
+*.env
+
+# 工具二進位（CI 會自己下載）
+tools/ffmpeg.exe
+tools/mp3gain.exe
+
+# UI 測試輸出
+ui-tests/screenshots/
+ui-tests/screenshots_skill/
+ui-tests/test_report.html
+ui-tests/test_results.json
+ui-tests/skill_test_report.html
+ui-tests/skill_test_results.json
+ui-tests/test_normalize_panel_report.html
+ui-tests/test_normalize_panel_results.json

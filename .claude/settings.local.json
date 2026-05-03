@@ -1,0 +1,23 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(openspec init *)",
+      "Bash(openspec new *)",
+      "Bash(openspec instructions *)",
+      "Bash(ffmpeg -version)",
+      "Bash(yt-dlp --version)",
+      "Bash(npm --version)",
+      "PowerShell(python --version)",
+      "PowerShell(ffmpeg -version 2>$null)",
+      "PowerShell(yt-dlp --version 2>$null)",
+      "PowerShell(Start-Sleep -Seconds 3; \\(Invoke-RestMethod \"http://localhost:8000/auth/status\"\\).logged_in)",
+      "PowerShell($json = Get-Content \"$env:USERPROFILE\\\\.yt-mp3-tool\\\\token.json\" -ErrorAction SilentlyContinue; if \\($json\\) { \"token exists\" } else { \"no token\" })",
+      "PowerShell(cd \"C:\\\\vue\\\\YT_to_MP3\\\\ui-tests\"; $env:PYTHONIOENCODING=\"utf-8\"; python ui_test.py 2>&1)",
+      "Bash(curl -s http://localhost:8000/auth/status)",
+      "Bash(python ui-tests/skill_test.py)",
+      "Bash(openspec status *)",
+      "Bash(npm test *)",
+      "Bash(openspec list *)"
+    ]
+  }
+}
