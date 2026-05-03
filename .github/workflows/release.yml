@@ -34,27 +34,34 @@ jobs:
           pip install -r backend/requirements.txt
           pip install -r backend/requirements-dev.txt
 
+      - name: Compute cache month
+        id: cache-month
+        shell: pwsh
+        run: echo "month=$(Get-Date -Format yyyy-MM)" >> $env:GITHUB_OUTPUT
+
       - name: Cache ffmpeg
         id: cache-ffmpeg
         uses: actions/cache@v4
         with:
           path: tools/ffmpeg.exe
-          # 鎖死 ffmpeg 版本（BtbN 每月 build；以下是固定的 release tag）
-          key: ffmpeg-btbn-2024-12-15
+          # 用月份當 cache key — 每月會 refresh 一次抓最新的 BtbN build
+          key: ffmpeg-btbn-${{ steps.cache-month.outputs.month }}
 
-      - name: Download ffmpeg (BtbN static)
+      - name: Download ffmpeg (BtbN latest)
         if: steps.cache-ffmpeg.outputs.cache-hit != 'true'
         shell: pwsh
         run: |
-          $url = "https://github.com/BtBN/FFmpeg-Builds/releases/download/autobuild-2024-12-15-12-49/ffmpeg-N-118069-g4a134eb14e-win64-gpl.zip"
+          # `latest/download/<asset>` 是 GitHub 的永久 URL，ffmpeg-master-latest-win64-gpl.zip 是 BtbN 每月 build 的標準檔名
+          $url = "https://github.com/BtBN/FFmpeg-Builds/releases/latest/download/ffmpeg-master-latest-win64-gpl.zip"
           $zip = "$env:RUNNER_TEMP\ffmpeg.zip"
           $extract = "$env:RUNNER_TEMP\ffmpeg-extract"
-          Invoke-WebRequest -Uri $url -OutFile $zip
+          Invoke-WebRequest -Uri $url -OutFile $zip -UseBasicParsing
           Expand-Archive -Path $zip -DestinationPath $extract -Force
-          # 找出 bin/ffmpeg.exe 不管 zip 內目錄叫什麼
           $ffmpeg = Get-ChildItem -Path $extract -Recurse -Filter ffmpeg.exe | Select-Object -First 1
+          if (-not $ffmpeg) { throw "ffmpeg.exe not found in BtbN zip" }
           New-Item -ItemType Directory -Path tools -Force | Out-Null
           Copy-Item $ffmpeg.FullName -Destination tools\ffmpeg.exe -Force
+          Write-Host "ffmpeg.exe size: $((Get-Item tools\ffmpeg.exe).Length) bytes"
 
       - name: Cache mp3gain
         id: cache-mp3gain
