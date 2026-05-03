@@ -44,7 +44,9 @@ if "%LATEST_TAG%"=="" (
     echo [update] ERROR: failed to query latest release. Network down or repo wrong?
     exit /b 3
 )
-set LATEST_VERSION=%LATEST_TAG:v=%
+REM Strip a single leading 'v' (avoid stripping all v chars from versions like v0.5.0-rc.v2)
+set LATEST_VERSION=%LATEST_TAG%
+if "%LATEST_VERSION:~0,1%"=="v" set LATEST_VERSION=%LATEST_VERSION:~1%
 echo [update] Latest tag: %LATEST_TAG% (version %LATEST_VERSION%)
 
 REM -- read local version (if any) ---------------------------------------------

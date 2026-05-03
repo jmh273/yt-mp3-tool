@@ -32,9 +32,11 @@ if defined VERSION (
         echo [build] No git tag found; defaulting VERSION=0.0.0-dev
         set VERSION=0.0.0-dev
     ) else (
-        set VERSION=!TAG:v=!
+        set VERSION=!TAG!
     )
 )
+REM Strip a single leading 'v' if present (so v0.5.0 becomes 0.5.0; v-only chars in version stay)
+if "!VERSION:~0,1!"=="v" set VERSION=!VERSION:~1!
 echo [build] VERSION=!VERSION!
 > "%BACKEND%\_version.txt" echo !VERSION!
 
