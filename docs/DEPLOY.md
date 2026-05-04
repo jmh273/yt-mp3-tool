@@ -4,6 +4,18 @@
 
 ---
 
+## Release 前 checklist（在 dev VM 跑）
+
+1. 確認後端 + 前端在跑、已 Google 登入
+2. **跑完整 walkthrough 測試**：`python ui-tests/feature_walkthrough.py`
+3. 開 `ui-tests/feature_walkthrough_report.html`，確認**全部 12 個案例都綠燈** (PASS)
+4. 任何案例失敗 → 修 → 再跑直到全綠 → 才能進到下一步
+5. 推 tag：`git tag v0.X.Y && git push --tags`
+6. 等 GitHub Actions build → release 出來
+7. 在每台目標 PC 跑 `update.bat`
+
+---
+
 ## 一次性：第一次安裝一台新 PC
 
 ### 1. 裝 GitHub CLI 並登入

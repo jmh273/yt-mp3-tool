@@ -41,9 +41,14 @@ tools/*
 # UI 測試輸出
 ui-tests/screenshots/
 ui-tests/screenshots_skill/
+ui-tests/screenshots_walkthrough/
 ui-tests/test_report.html
 ui-tests/test_results.json
 ui-tests/skill_test_report.html
 ui-tests/skill_test_results.json
 ui-tests/test_normalize_panel_report.html
 ui-tests/test_normalize_panel_results.json
+ui-tests/feature_walkthrough_report.html
+ui-tests/feature_walkthrough_results.json
+# fixtures *do* get tracked (small, deterministic mp3 test inputs)
+!ui-tests/fixtures/

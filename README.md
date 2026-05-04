@@ -82,6 +82,20 @@ npm run dev
 - 需定期更新 yt-dlp：`pip install -U yt-dlp`
 - 如遇下載失敗，通常是 yt-dlp 版本過舊或該影片有版權限制
 
+## 完整 UI Walkthrough 測試（release 前驗收）
+
+執行：
+
+```bash
+python ui-tests/feature_walkthrough.py
+```
+
+前置條件：後端 (uvicorn :8000) + 前端 (vite :5173) 都在跑、已在 http://localhost:5173 完成 Google 登入。
+
+12 個測試案例（~50 步驟）涵蓋全部 user-visible 功能（啟動 / 搜尋 / 頻道 / 影片勾選 / 最新影片 / 設定 / 右欄分頁 / 音量正規化 / rename / 登出）。每步驟都有繁中操作敘述 + 截圖。
+
+完成後輸出 `ui-tests/feature_walkthrough_report.html` — 開瀏覽器看，全綠才適合 release。
+
 ## 部署到其他 Windows PC
 
 開發在這個 repo 內進行（`start.bat` / `npm run dev` + `uvicorn --reload`）。
