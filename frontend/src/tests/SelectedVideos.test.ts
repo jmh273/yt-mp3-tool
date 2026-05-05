@@ -6,6 +6,7 @@ import { useDownloadStore } from '@/stores/download'
 import { snap, extractCss } from './snap'
 
 vi.mock('@/api', () => ({
+  API_BASE: '/api',
   apiPost: vi.fn(),
 }))
 
@@ -79,7 +80,7 @@ describe('SelectedVideos', () => {
     await wrapper.find('.dl').trigger('click')
     await flushPromises()
 
-    expect(apiPost).toHaveBeenCalledWith('/download', { videos: [FAKE_VIDEO] })
+    expect(apiPost).toHaveBeenCalledWith('/download', { videos: [FAKE_VIDEO], format: 'mp3', quality: 192 })
   })
 
   it('下載中按鈕文字變為「下載中...」且 disabled', async () => {
@@ -165,5 +166,77 @@ describe('SelectedVideos', () => {
     snap('SelectedVideos|轉換中顯示橘色進度條', wrapper.html(), CSS)
     const bar = wrapper.find('.bar')
     expect(bar.classes()).toContain('converting')
+  })
+
+  // ── 格式 / 品質選單 ───────────────────────────────────────────
+  it('預設顯示 MP3 與 192 kbps', () => {
+    const download = useDownloadStore()
+    download.toggle(FAKE_VIDEO)
+
+    const wrapper = mount(SelectedVideos)
+    const formatSelect = wrapper.find<HTMLSelectElement>('.format-select')
+    const qualitySelect = wrapper.find<HTMLSelectElement>('.quality-select')
+
+    expect(formatSelect.element.value).toBe('mp3')
+    expect(qualitySelect.element.value).toBe('192')
+    snap('SelectedVideos|預設顯示 MP3 與 192 kbps', wrapper.html(), CSS)
+  })
+
+  it('切換到 MP4 後品質自動變為 720p', async () => {
+    const download = useDownloadStore()
+    download.toggle(FAKE_VIDEO)
+
+    const wrapper = mount(SelectedVideos)
+    const formatSelect = wrapper.find<HTMLSelectElement>('.format-select')
+    await formatSelect.setValue('mp4')
+
+    const qualitySelect = wrapper.find<HTMLSelectElement>('.quality-select')
+    expect(qualitySelect.element.value).toBe('720')
+    // 選項應為 mp4 的範圍
+    const optionTexts = qualitySelect.findAll('option').map(o => o.text())
+    expect(optionTexts).toEqual(['360p', '480p', '720p', '1080p'])
+    snap('SelectedVideos|切換到 MP4 後品質自動變為 720p', wrapper.html(), CSS)
+  })
+
+  it('切回 MP3 品質回到 192', async () => {
+    const download = useDownloadStore()
+    download.toggle(FAKE_VIDEO)
+
+    const wrapper = mount(SelectedVideos)
+    const formatSelect = wrapper.find<HTMLSelectElement>('.format-select')
+
+    // mp4 → 1080，再切回 mp3
+    await formatSelect.setValue('mp4')
+    const qualitySelect = wrapper.find<HTMLSelectElement>('.quality-select')
+    await qualitySelect.setValue('1080')
+    expect(qualitySelect.element.value).toBe('1080')
+
+    await formatSelect.setValue('mp3')
+    expect(qualitySelect.element.value).toBe('192')
+  })
+
+  it('下載中時兩個下拉皆 disabled', () => {
+    const download = useDownloadStore()
+    download.toggle(FAKE_VIDEO)
+    download.downloading = true
+
+    const wrapper = mount(SelectedVideos)
+    expect(wrapper.find('.format-select').attributes('disabled')).toBeDefined()
+    expect(wrapper.find('.quality-select').attributes('disabled')).toBeDefined()
+  })
+
+  it('點擊下載傳遞當前 format/quality 給 startDownload', async () => {
+    const download = useDownloadStore()
+    download.toggle(FAKE_VIDEO)
+    const spy = vi.spyOn(download, 'startDownload').mockResolvedValue(undefined)
+
+    const wrapper = mount(SelectedVideos)
+    await wrapper.find<HTMLSelectElement>('.format-select').setValue('mp4')
+    await wrapper.find<HTMLSelectElement>('.quality-select').setValue('480')
+
+    await wrapper.find('.dl').trigger('click')
+    await flushPromises()
+
+    expect(spy).toHaveBeenCalledWith('mp4', 480)
   })
 })

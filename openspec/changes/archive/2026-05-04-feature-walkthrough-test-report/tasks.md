@@ -35,8 +35,8 @@
 
 ## 5. Verification
 
-- [ ] 5.1 Smoke: with backend + frontend running and Google logged in on dev VM, run `python ui-tests/feature_walkthrough.py`; confirm exit code 0 and report HTML opens cleanly
-- [ ] 5.2 Open report in browser; visually verify each TC section has the expected number of steps + screenshots; verify Chinese narration is readable and matches what's shown in the screenshot
-- [ ] 5.3 Inject a deliberate failure (e.g. temporarily change `dirInput` selector in walkthrough to a wrong selector) and re-run; verify report flags that step red, does NOT abort the rest of the case, summary header shows correct fail count; revert the deliberate failure
-- [ ] 5.4 Run a second time without resetting fixtures; verify TC-10/TC-11 still work (TC-10 will see all `已符合`, TC-11's rename target may already exist → covered by `target exists` skipped path; report should still PASS overall)
-- [ ] 5.5 Verify `.gitignore` lets fixtures through but blocks `screenshots_walkthrough/`, `feature_walkthrough_report.html`, `feature_walkthrough_results.json`
+- [x] 5.1 Smoke: with backend + frontend running and Google logged in on dev VM, run `python ui-tests/feature_walkthrough.py`; confirm exit code 0 and report HTML opens cleanly
+- [x] 5.2 Open report in browser; visually verify each TC section has the expected number of steps + screenshots; verify Chinese narration is readable and matches what's shown in the screenshot
+- [x] 5.3 Inject a deliberate failure (e.g. temporarily change `dirInput` selector in walkthrough to a wrong selector) and re-run; verify report flags that step red, does NOT abort the rest of the case, summary header shows correct fail count; revert the deliberate failure
+- [x] 5.4 Run a second time without resetting fixtures; verify TC-10/TC-11 still work (TC-10 will see all `已符合`, TC-11's rename target may already exist → covered by `target exists` skipped path; report should still PASS overall)
+- [x] 5.5 Verify `.gitignore` lets fixtures through but blocks `screenshots_walkthrough/`, `feature_walkthrough_report.html`, `feature_walkthrough_results.json`

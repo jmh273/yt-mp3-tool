@@ -4,6 +4,7 @@ import { useAuthStore } from '@/stores/auth'
 import { useDownloadStore } from '@/stores/download'
 
 vi.mock('@/api', () => ({
+  API_BASE: '/api',
   apiGet: vi.fn(),
   apiPost: vi.fn(),
 }))
@@ -155,9 +156,41 @@ describe('downloadStore', () => {
     store.toggle(FAKE_VIDEO)
     await store.startDownload()
 
-    expect(apiPost).toHaveBeenCalledWith('/download', { videos: [FAKE_VIDEO] })
+    expect(apiPost).toHaveBeenCalledWith('/download', { videos: [FAKE_VIDEO], format: 'mp3', quality: 192 })
     expect(store.taskId).toBe('task-xyz')
     expect(store.downloading).toBe(true)
+  })
+
+  it('startDownload：未傳參數時預設送出 mp3 / 192', async () => {
+    const { apiPost } = await import('@/api')
+    vi.mocked(apiPost).mockResolvedValue({ task_id: 't' })
+    const { Ctor } = makeEventSourceMock()
+    vi.stubGlobal('EventSource', Ctor)
+
+    const store = useDownloadStore()
+    store.toggle(FAKE_VIDEO)
+    await store.startDownload()
+
+    expect(apiPost).toHaveBeenCalledWith('/download', expect.objectContaining({
+      format: 'mp3',
+      quality: 192,
+    }))
+  })
+
+  it('startDownload：自訂 format/quality 帶入 payload', async () => {
+    const { apiPost } = await import('@/api')
+    vi.mocked(apiPost).mockResolvedValue({ task_id: 't' })
+    const { Ctor } = makeEventSourceMock()
+    vi.stubGlobal('EventSource', Ctor)
+
+    const store = useDownloadStore()
+    store.toggle(FAKE_VIDEO)
+    await store.startDownload('mp4', 1080)
+
+    expect(apiPost).toHaveBeenCalledWith('/download', expect.objectContaining({
+      format: 'mp4',
+      quality: 1080,
+    }))
   })
 
   it('startDownload：SSE done 事件結束下載狀態', async () => {

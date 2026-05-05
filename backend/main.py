@@ -81,7 +81,11 @@ DEFAULT_SETTINGS = {
     "min_duration_minutes": 3,
     "max_duration_minutes": 60,
     "normalize_target_db": 89.0,
+    "quota_used": 0,
+    "quota_date": "",
 }
+
+YOUTUBE_QUOTA_DAILY_LIMIT = 10000
 
 MP3GAIN_TOLERANCE_DB = 0.75
 MP3GAIN_REFERENCE_DB = 89.0  # mp3gain default target = ReplayGain reference
@@ -199,7 +203,8 @@ def enhance_and_filter_videos(youtube, videos: list[dict]) -> list[dict]:
                 part="snippet,contentDetails",
                 id=",".join(batch_ids)
             ).execute()
-            
+            consume_quota(1)
+
             for item in resp.get("items", []):
                 vid = item["id"]
                 if item.get("snippet", {}).get("liveBroadcastContent") == "upcoming":
@@ -255,6 +260,24 @@ def load_settings() -> dict:
 
 def save_settings(data: dict):
     SETTINGS_FILE.write_text(json.dumps(data, ensure_ascii=False, indent=2))
+
+
+def _current_pt_date() -> str:
+    """Pacific Time 日期（UTC-8，忽略夏令時，作為 quota 重置基準）。"""
+    from datetime import datetime, timezone, timedelta
+    return datetime.now(timezone(timedelta(hours=-8))).strftime("%Y-%m-%d")
+
+
+def consume_quota(amount: int = 1) -> None:
+    """記錄一次 YouTube API 呼叫消耗。跨 PT 日期會自動重置計數。"""
+    settings = load_settings()
+    today = _current_pt_date()
+    if settings.get("quota_date") != today:
+        settings["quota_used"] = amount
+        settings["quota_date"] = today
+    else:
+        settings["quota_used"] = int(settings.get("quota_used", 0)) + amount
+    save_settings(settings)
 
 
 def load_credentials() -> Credentials | None:
@@ -344,6 +367,7 @@ def get_subscriptions():
             )
             .execute()
         )
+        consume_quota(1)
         for item in resp.get("items", []):
             snippet = item["snippet"]
             channels.append(
@@ -383,6 +407,7 @@ async def get_subscriptions_latest_dates():
             .list(part="snippet", mine=True, maxResults=50, pageToken=page_token)
             .execute()
         )
+        consume_quota(1)
         for item in resp.get("items", []):
             channels.append(item["snippet"]["resourceId"]["channelId"])
         page_token = resp.get("nextPageToken")
@@ -547,6 +572,7 @@ async def get_latest_videos(hours: int | None = None):
             .list(part="snippet", mine=True, maxResults=50, pageToken=page_token)
             .execute()
         )
+        consume_quota(1)
         for item in resp.get("items", []):
             sn = item["snippet"]
             channels.append({
@@ -596,9 +622,52 @@ async def get_latest_videos(hours: int | None = None):
 # ── 下載路由 ───────────────────────────────────────────────────────────────────
 class DownloadRequest(BaseModel):
     videos: list[dict]  # [{video_id, title, url}]
+    format: str = "mp3"   # "mp3" | "mp4"
+    quality: int = 192    # mp3: kbps; mp4: p
 
 
-def run_download(videos: list[dict], output_path: str, task_id: str):
+_MP3_QUALITIES = (128, 192, 256, 320)
+_MP4_QUALITIES = (360, 480, 720, 1080)
+_FORMAT_DEFAULT_QUALITY = {"mp3": 192, "mp4": 720}
+
+
+def _normalize_format_quality(fmt: str | None, quality: int | None) -> tuple[str, int]:
+    """白名單外的值無聲修正為該格式預設；未知格式回退 mp3 / 192。"""
+    f = fmt if fmt in _FORMAT_DEFAULT_QUALITY else "mp3"
+    allowed = _MP3_QUALITIES if f == "mp3" else _MP4_QUALITIES
+    q = quality if isinstance(quality, int) and quality in allowed else _FORMAT_DEFAULT_QUALITY[f]
+    return f, q
+
+
+def _build_ydl_opts(output_path: str, safe_title: str, hook, fmt: str, quality: int) -> dict:
+    base = {
+        "outtmpl": os.path.join(output_path, f"{safe_title}.%(ext)s"),
+        "progress_hooks": [hook],
+        "quiet": True,
+        "no_warnings": True,
+    }
+    if fmt == "mp4":
+        return {
+            **base,
+            "format": (
+                f"bestvideo[height<={quality}][ext=mp4]+bestaudio[ext=m4a]/"
+                f"best[height<={quality}][ext=mp4]/best"
+            ),
+            "merge_output_format": "mp4",
+        }
+    # mp3 預設
+    return {
+        **base,
+        "format": "bestaudio/best",
+        "postprocessors": [{
+            "key": "FFmpegExtractAudio",
+            "preferredcodec": "mp3",
+            "preferredquality": str(quality),
+        }],
+    }
+
+
+def run_download(videos: list[dict], output_path: str, task_id: str, fmt: str = "mp3", quality: int = 192):
     download_progress[task_id] = {"status": "running", "items": {}}
 
     for v in videos:
@@ -626,20 +695,7 @@ def run_download(videos: list[dict], output_path: str, task_id: str):
     for v in videos:
         vid = v["video_id"]
         safe_title = _sanitize_filename(v.get("title", ""))
-        ydl_opts = {
-            "format": "bestaudio/best",
-            "outtmpl": os.path.join(output_path, f"{safe_title}.%(ext)s"),
-            "postprocessors": [
-                {
-                    "key": "FFmpegExtractAudio",
-                    "preferredcodec": "mp3",
-                    "preferredquality": "192",
-                }
-            ],
-            "progress_hooks": [make_hook(vid)],
-            "quiet": True,
-            "no_warnings": True,
-        }
+        ydl_opts = _build_ydl_opts(output_path, safe_title, make_hook(vid), fmt, quality)
         try:
             with yt_dlp.YoutubeDL(ydl_opts) as ydl:
                 ydl.download([v["url"]])
@@ -666,8 +722,10 @@ async def start_download(body: DownloadRequest):
     import uuid
     task_id = str(uuid.uuid4())
 
+    fmt, quality = _normalize_format_quality(body.format, body.quality)
+
     loop = asyncio.get_event_loop()
-    loop.run_in_executor(None, run_download, body.videos, final_output_path, task_id)
+    loop.run_in_executor(None, run_download, body.videos, final_output_path, task_id, fmt, quality)
 
     return {"task_id": task_id}
 
@@ -945,6 +1003,23 @@ async def normalize_progress_sse(task_id: str):
 @app.get("/version")
 def version():
     return {"version": __version__}
+
+
+# ── Quota endpoint ────────────────────────────────────────────────────────────
+@app.get("/quota")
+def get_quota():
+    """回傳當前 YouTube API 配額使用狀況。跨 PT 日期會自動重置後再回傳。"""
+    settings = load_settings()
+    today = _current_pt_date()
+    if settings.get("quota_date") != today:
+        settings["quota_used"] = 0
+        settings["quota_date"] = today
+        save_settings(settings)
+    return {
+        "used": int(settings.get("quota_used", 0)),
+        "limit": YOUTUBE_QUOTA_DAILY_LIMIT,
+        "date": settings.get("quota_date", today),
+    }
 
 
 # ── SPA static mount (LAST: matches when no API route did) ───────────────────

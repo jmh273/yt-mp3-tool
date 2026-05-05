@@ -30,9 +30,11 @@
 import { ref, onMounted } from 'vue'
 import { apiGet } from '@/api'
 import { useDownloadStore, type VideoItem } from '@/stores/download'
+import { useQuotaStore } from '@/stores/quota'
 
 const props = defineProps<{ channelId: string }>()
 const download = useDownloadStore()
+const quota = useQuotaStore()
 const videos = ref<VideoItem[]>([])
 const loading = ref(true)
 const error = ref('')
@@ -45,6 +47,7 @@ onMounted(async () => {
     error.value = '無法載入影片'
   } finally {
     loading.value = false
+    quota.refresh()
   }
 })
 

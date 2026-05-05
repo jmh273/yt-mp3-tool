@@ -67,13 +67,15 @@ export const useDownloadStore = defineStore('download', () => {
     selected.value = []
   }
 
-  async function startDownload() {
+  async function startDownload(format: 'mp3' | 'mp4' = 'mp3', quality: number = 192) {
     if (selected.value.length === 0) return
     downloading.value = true
     progress.value = {}
 
     const { task_id } = await apiPost<{ task_id: string }>('/download', {
       videos: selected.value,
+      format,
+      quality,
     })
     taskId.value = task_id
 

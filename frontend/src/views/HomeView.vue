@@ -3,6 +3,9 @@
     <header>
       <h1>YT → MP3 <span v-if="version" class="version">v{{ version }}</span></h1>
       <div class="header-actions">
+        <span class="quota-badge" :class="quota.level" :title="`API Quota: ${quotaUsedDisplay} / ${quota.limit}`">
+          API Quota: {{ quotaUsedDisplay }} / {{ quota.limit }}
+        </span>
         <router-link to="/settings">設定</router-link>
         <button @click="auth.logout">登出</button>
       </div>
@@ -102,6 +105,7 @@ import { apiGet, apiDelete } from '@/api'
 import { useAuthStore } from '@/stores/auth'
 import { useDownloadStore } from '@/stores/download'
 import { useNormalizeStore } from '@/stores/normalize'
+import { useQuotaStore } from '@/stores/quota'
 import ChannelVideos from '@/components/ChannelVideos.vue'
 import LatestVideosFeed from '@/components/LatestVideosFeed.vue'
 import SelectedVideos from '@/components/SelectedVideos.vue'
@@ -117,6 +121,8 @@ interface Channel {
 const auth = useAuthStore()
 const downloadStore = useDownloadStore()
 const normalizeStore = useNormalizeStore()
+const quota = useQuotaStore()
+const quotaUsedDisplay = computed(() => quota.used === null ? '—' : quota.used)
 const channels = ref<Channel[]>([])
 const searchQuery = ref('')
 const loading = ref(true)
@@ -145,6 +151,7 @@ onMounted(async () => {
     error.value = e.message
   } finally {
     loading.value = false
+    quota.refresh()
   }
 })
 
@@ -173,6 +180,7 @@ async function checkLatestDates() {
     alert('檢查更新日期失敗：' + e.message)
   } finally {
     checkingDates.value = false
+    quota.refresh()
   }
 }
 
@@ -209,6 +217,18 @@ h1 { margin: 0; font-size: 1.2rem; }
 .header-actions { display: flex; gap: 1rem; align-items: center; }
 .header-actions a { text-decoration: none; color: #333; font-size: 0.9rem; }
 .header-actions button { background: none; border: 1px solid #ccc; padding: 0.25rem 0.6rem; border-radius: 4px; cursor: pointer; font-size: 0.9rem; }
+
+.quota-badge {
+  font-size: 0.78rem;
+  padding: 0.2rem 0.6rem;
+  border-radius: 12px;
+  font-variant-numeric: tabular-nums;
+  border: 1px solid transparent;
+}
+.quota-badge.unknown { background: #f0f0f0; color: #888; border-color: #ddd; }
+.quota-badge.safe    { background: #e6f4ea; color: #2ea043; border-color: #b5e0c2; }
+.quota-badge.warning { background: #fff4e0; color: #b25e00; border-color: #ffd599; }
+.quota-badge.danger  { background: #fce8e9; color: #d1242f; border-color: #f5b3b6; }
 
 .layout {
   display: grid;
