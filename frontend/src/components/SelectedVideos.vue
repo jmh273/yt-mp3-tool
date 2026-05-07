@@ -29,7 +29,7 @@
 
     <div v-if="download.downloading" class="progress-list">
       <div v-for="(item, vid) in download.progress" :key="vid" class="progress-item">
-        <span class="ptitle">{{ item.title }}</span>
+        <span class="ptitle" :title="item.title">{{ item.title }}</span>
         <div class="bar-wrap">
           <div
             class="bar"

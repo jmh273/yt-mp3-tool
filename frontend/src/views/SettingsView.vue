@@ -26,11 +26,11 @@
         <span v-if="latestHoursError" class="field-error">{{ latestHoursError }}</span>
       </label>
       <label>
-        最短影片長度 (分鐘)
+        最新影片最短長度 (分鐘)
         <input v-model.number="minDuration" type="number" min="0" />
       </label>
       <label>
-        最長影片長度 (分鐘)
+        最新影片最長長度 (分鐘)
         <input v-model.number="maxDuration" type="number" min="1" />
       </label>
       <label>

@@ -3,9 +3,31 @@
     <header>
       <h1>YT → MP3 <span v-if="version" class="version">v{{ version }}</span></h1>
       <div class="header-actions">
-        <span class="quota-badge" :class="quota.level" :title="`API Quota: ${quotaUsedDisplay} / ${quota.limit}`">
+        <span class="quota-badge" :class="quota.level" :title="`API Quota: ${quotaUsedDisplay} / ${quota.limit}\n(跨帳號共用)`">
           API Quota: {{ quotaUsedDisplay }} / {{ quota.limit }}
         </span>
+
+        <!-- 帳號切換 dropdown -->
+        <div class="account-switcher" v-if="auth.accounts.length > 0">
+          <button class="account-toggle" @click="accountDropdownOpen = !accountDropdownOpen">
+            {{ truncateEmail(auth.currentAccount) }} ▾
+          </button>
+          <div v-if="accountDropdownOpen" class="account-dropdown">
+            <div
+              v-for="email in auth.accounts"
+              :key="email"
+              class="account-item"
+              :class="{ current: email === auth.currentAccount }"
+            >
+              <span class="account-email" @click="handleSwitch(email)">{{ email }}</span>
+              <button class="account-logout-btn" @click.stop="handleLogoutAccount(email)" title="登出此帳號">✕</button>
+            </div>
+            <div class="account-item add-account" @click="handleAddAccount">
+              ＋ 新增帳號
+            </div>
+          </div>
+        </div>
+
         <router-link to="/settings">設定</router-link>
         <button @click="auth.logout">登出</button>
       </div>
@@ -23,6 +45,30 @@
           @click="showLatest"
         >
           最新影片
+        </button>
+
+        <button
+          class="latest-btn trending"
+          :class="{ active: activeView === 'trending' }"
+          @click="showTrending"
+        >
+          🔥 發燒影片
+        </button>
+
+        <button
+          class="latest-btn search-btn"
+          :class="{ active: activeView === 'search' }"
+          @click="showSearch"
+        >
+          🔍 搜尋影片
+        </button>
+
+        <button
+          class="latest-btn url-btn"
+          :class="{ active: activeView === 'url' }"
+          @click="showUrl"
+        >
+          🔗 網址下載
         </button>
 
         <button class="action-btn" @click="checkLatestDates" :disabled="checkingDates">
@@ -64,8 +110,12 @@
           v-else-if="activeView === 'channel' && selectedChannelId"
           :key="selectedChannelId"
           :channel-id="selectedChannelId"
+          @back="showLatest"
         />
         <LatestVideosFeed v-else-if="activeView === 'latest'" />
+        <TrendingVideosFeed v-else-if="activeView === 'trending'" />
+        <SearchVideosFeed v-else-if="activeView === 'search'" />
+        <UrlDownloadFeed v-else-if="activeView === 'url'" />
       </main>
 
       <!-- 第三欄：分頁式右欄（下載 / 音量正規化） -->
@@ -108,6 +158,9 @@ import { useNormalizeStore } from '@/stores/normalize'
 import { useQuotaStore } from '@/stores/quota'
 import ChannelVideos from '@/components/ChannelVideos.vue'
 import LatestVideosFeed from '@/components/LatestVideosFeed.vue'
+import TrendingVideosFeed from '@/components/TrendingVideosFeed.vue'
+import SearchVideosFeed from '@/components/SearchVideosFeed.vue'
+import UrlDownloadFeed from '@/components/UrlDownloadFeed.vue'
 import SelectedVideos from '@/components/SelectedVideos.vue'
 import VolumeNormalizer from '@/components/VolumeNormalizer.vue'
 
@@ -129,10 +182,11 @@ const loading = ref(true)
 const error = ref('')
 const version = ref('')
 const selectedChannelId = ref<string | null>(null)
-const activeView = ref<'none' | 'channel' | 'latest'>('none')
+const activeView = ref<'none' | 'channel' | 'latest' | 'trending' | 'search' | 'url'>('none')
 const activeRightTab = ref<'download' | 'normalize'>('download')
 const checkingDates = ref(false)
 const channelDates = ref<Record<string, string>>({})
+const accountDropdownOpen = ref(false)
 
 const filteredChannels = computed(() => {
   const q = searchQuery.value.trim().toLowerCase()
@@ -166,6 +220,21 @@ function showLatest() {
   activeView.value = 'latest'
 }
 
+function showTrending() {
+  selectedChannelId.value = null
+  activeView.value = 'trending'
+}
+
+function showSearch() {
+  selectedChannelId.value = null
+  activeView.value = 'search'
+}
+
+function showUrl() {
+  selectedChannelId.value = null
+  activeView.value = 'url'
+}
+
 function formatChannelDate(iso: string): string {
   if (!iso) return ''
   return new Date(iso).toLocaleDateString('zh-TW')
@@ -197,6 +266,82 @@ async function deleteChannel(ch: Channel) {
     alert('取消訂閱失敗：' + e.message)
   }
 }
+
+function truncateEmail(email: string): string {
+  if (!email) return ''
+  if (email.length <= 20) return email
+  const parts = email.split('@')
+  const local = parts[0] || ''
+  const domain = parts[1]
+  if (!domain) return email.slice(0, 18) + '…'
+  return local.slice(0, 8) + '…@' + domain
+}
+
+async function handleSwitch(email: string) {
+  if (email === auth.currentAccount) {
+    accountDropdownOpen.value = false
+    return
+  }
+  accountDropdownOpen.value = false
+  loading.value = true
+  error.value = ''
+  try {
+    await auth.switchAccount(email)
+    // 重新載入該帳號的訂閱清單
+    selectedChannelId.value = null
+    activeView.value = 'none'
+    channelDates.value = {}
+    const data = await apiGet<{ channels: Channel[] }>('/subscriptions')
+    channels.value = data.channels
+    quota.refresh()
+  } catch (e: any) {
+    error.value = '切換帳號失敗：' + e.message
+  } finally {
+    loading.value = false
+  }
+}
+
+async function handleLogoutAccount(email: string) {
+  if (!confirm(`確定要登出帳號「${email}」嗎？`)) return
+  accountDropdownOpen.value = false
+  await auth.logoutAccount(email)
+  if (auth.loggedIn) {
+    // 還有其他帳號，重新載入
+    loading.value = true
+    try {
+      const data = await apiGet<{ channels: Channel[] }>('/subscriptions')
+      channels.value = data.channels
+      selectedChannelId.value = null
+      activeView.value = 'none'
+      quota.refresh()
+    } finally {
+      loading.value = false
+    }
+  }
+}
+
+async function handleAddAccount() {
+  accountDropdownOpen.value = false
+  await auth.addAccount()
+  // 使用者需在瀏覽器完成 OAuth，之後 poll
+  const deadline = Date.now() + 120_000
+  while (Date.now() < deadline) {
+    await new Promise(r => setTimeout(r, 2000))
+    await auth.checkStatus()
+    if (auth.accounts.length > channels.value.length) break // 新帳號出現
+  }
+  // 重新載入
+  if (auth.loggedIn) {
+    loading.value = true
+    try {
+      const data = await apiGet<{ channels: Channel[] }>('/subscriptions')
+      channels.value = data.channels
+      quota.refresh()
+    } finally {
+      loading.value = false
+    }
+  }
+}
 </script>
 
 <style scoped>
@@ -214,9 +359,39 @@ header {
 }
 h1 { margin: 0; font-size: 1.2rem; }
 .version { font-size: 0.7rem; color: #999; font-weight: normal; margin-left: 0.4rem; }
-.header-actions { display: flex; gap: 1rem; align-items: center; }
+.header-actions { display: flex; gap: 0.75rem; align-items: center; }
 .header-actions a { text-decoration: none; color: #333; font-size: 0.9rem; }
-.header-actions button { background: none; border: 1px solid #ccc; padding: 0.25rem 0.6rem; border-radius: 4px; cursor: pointer; font-size: 0.9rem; }
+.header-actions > button { background: none; border: 1px solid #ccc; padding: 0.25rem 0.6rem; border-radius: 4px; cursor: pointer; font-size: 0.9rem; }
+
+/* 帳號切換 dropdown */
+.account-switcher { position: relative; }
+.account-toggle {
+  background: #f5f5f5; border: 1px solid #ddd; padding: 0.25rem 0.6rem;
+  border-radius: 4px; cursor: pointer; font-size: 0.82rem; white-space: nowrap;
+}
+.account-toggle:hover { background: #eee; }
+.account-dropdown {
+  position: absolute; right: 0; top: calc(100% + 4px); z-index: 100;
+  background: white; border: 1px solid #ddd; border-radius: 6px;
+  box-shadow: 0 4px 16px rgba(0,0,0,.12); min-width: 240px;
+  overflow: hidden;
+}
+.account-item {
+  display: flex; align-items: center; justify-content: space-between;
+  padding: 0.5rem 0.75rem; font-size: 0.85rem; cursor: pointer;
+  border-bottom: 1px solid #f0f0f0;
+}
+.account-item:last-child { border-bottom: none; }
+.account-item:hover { background: #f8f8f8; }
+.account-item.current { background: #fff0f0; font-weight: 600; }
+.account-email { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.account-logout-btn {
+  background: none; border: none; color: #999; cursor: pointer;
+  font-size: 0.9rem; padding: 0 0.3rem; line-height: 1;
+}
+.account-logout-btn:hover { color: #d1242f; }
+.add-account { color: #0969da; font-weight: 500; justify-content: center; }
+.add-account:hover { background: #f0f6ff; }
 
 .quota-badge {
   font-size: 0.78rem;

@@ -68,10 +68,16 @@ def _find_client_secret() -> pathlib.Path | None:
 
 # ── 路徑設定 ──────────────────────────────────────────────────────────────────
 CONFIG_DIR = pathlib.Path.home() / ".yt-mp3-tool"
-TOKEN_FILE = CONFIG_DIR / "token.json"
+TOKEN_FILE = CONFIG_DIR / "token.json"           # 舊版（遷移後刪除）
+TOKENS_DIR = CONFIG_DIR / "tokens"                # 多帳號 token 目錄
+CURRENT_ACCOUNT_FILE = CONFIG_DIR / "current_account.txt"
 SETTINGS_FILE = CONFIG_DIR / "settings.json"
 
-SCOPES = ["https://www.googleapis.com/auth/youtube"]
+SCOPES = [
+    "https://www.googleapis.com/auth/youtube",
+    "https://www.googleapis.com/auth/userinfo.email",
+    "openid",
+]
 REDIRECT_URI = "http://localhost:8000/auth/callback"
 
 DEFAULT_SETTINGS = {
@@ -91,6 +97,7 @@ MP3GAIN_TOLERANCE_DB = 0.75
 MP3GAIN_REFERENCE_DB = 89.0  # mp3gain default target = ReplayGain reference
 
 CONFIG_DIR.mkdir(exist_ok=True)
+TOKENS_DIR.mkdir(exist_ok=True)
 
 
 def _read_version() -> str:
@@ -108,6 +115,9 @@ __version__ = _read_version()
 
 @asynccontextmanager
 async def lifespan(_app: FastAPI):
+    # ── 舊版 token.json → tokens/<email>.json 自動遷移 ──
+    _migrate_legacy_token()
+
     if shutil.which("ffmpeg") is None:
         print(
             "\033[91m[警告] 找不到 ffmpeg！MP3 轉換功能將無法使用。"
@@ -118,7 +128,10 @@ async def lifespan(_app: FastAPI):
         result = subprocess.run(["ffmpeg", "-version"], capture_output=True, text=True)
         version_line = result.stdout.splitlines()[0] if result.stdout else "unknown"
         print(f"[OK] ffmpeg 已就緒：{version_line}")
-    print(f"[OK] yt-mp3-tool v{__version__}")
+    accounts = _list_account_emails()
+    current = _get_current_email()
+    print(f"[OK] yt-mp3-tool v{__version__} — {len(accounts)} 帳號已授權"
+          f"{f'，當前：{current}' if current else ''}")
     yield
 
 
@@ -188,7 +201,7 @@ def parse_iso_duration(duration: str) -> int:
     if m: sec += int(m.group(1))
     return sec
 
-def enhance_and_filter_videos(youtube, videos: list[dict]) -> list[dict]:
+def enhance_and_filter_videos(youtube, videos: list[dict], apply_duration_filter: bool = True) -> list[dict]:
     if not videos:
         return []
     
@@ -216,8 +229,8 @@ def enhance_and_filter_videos(youtube, videos: list[dict]) -> list[dict]:
                 min_sec = settings.get("min_duration_minutes", 3) * 60
                 max_sec = settings.get("max_duration_minutes", 60) * 60
                 
-                if min_sec <= dur_sec <= max_sec:
-                    v_dict[vid]["duration_seconds"] = dur_sec
+                v_dict[vid]["duration_seconds"] = dur_sec
+                if not apply_duration_filter or (min_sec <= dur_sec <= max_sec):
                     valid_videos.append(v_dict[vid])
         except Exception as e:
             print(f"[YouTube API Error] {e}")
@@ -280,13 +293,102 @@ def consume_quota(amount: int = 1) -> None:
     save_settings(settings)
 
 
-def load_credentials() -> Credentials | None:
+# ── 多帳號 token 工具函式 ─────────────────────────────────────────────────────
+def _get_current_email() -> str | None:
+    """讀取 current_account.txt，回傳當前帳號 email（若不存在則回傳 None）。"""
+    if CURRENT_ACCOUNT_FILE.exists():
+        email = CURRENT_ACCOUNT_FILE.read_text(encoding="utf-8").strip()
+        if email:
+            return email
+    return None
+
+
+def _set_current_email(email: str) -> None:
+    """寫入 current_account.txt。"""
+    CURRENT_ACCOUNT_FILE.write_text(email, encoding="utf-8")
+
+
+def _clear_current_email() -> None:
+    """清除 current_account.txt。"""
+    if CURRENT_ACCOUNT_FILE.exists():
+        CURRENT_ACCOUNT_FILE.unlink()
+
+
+def _token_path(email: str) -> pathlib.Path:
+    """回傳指定帳號的 token 檔路徑。"""
+    return TOKENS_DIR / f"{email}.json"
+
+
+def _list_account_emails() -> list[str]:
+    """列出 tokens/ 目錄下所有已授權帳號的 email。"""
+    if not TOKENS_DIR.exists():
+        return []
+    return sorted(
+        p.stem for p in TOKENS_DIR.iterdir()
+        if p.is_file() and p.suffix == ".json"
+    )
+
+
+def _fetch_email(creds: Credentials) -> str:
+    """呼叫 Google userinfo API 取得帳號 email（不消耗 YouTube quota）。"""
+    import urllib.request
+    req = urllib.request.Request(
+        "https://www.googleapis.com/oauth2/v2/userinfo",
+        headers={"Authorization": f"Bearer {creds.token}"},
+    )
+    with urllib.request.urlopen(req, timeout=10) as resp:
+        data = json.loads(resp.read().decode())
+    email = data.get("email", "")
+    if not email:
+        raise RuntimeError("無法從 Google userinfo 取得 email")
+    return email
+
+
+def _migrate_legacy_token() -> None:
+    """啟動時將舊版 token.json 遷移到 tokens/<email>.json（一次性）。"""
     if not TOKEN_FILE.exists():
+        return
+    # 已經有 tokens/ 內的檔案 → 不重複遷移
+    if _list_account_emails():
+        print("[遷移] 發現舊版 token.json 但 tokens/ 已有帳號，跳過遷移（請手動刪除舊檔）")
+        return
+    try:
+        # 不帶 SCOPES 載入，避免舊 token scope 不符被拒
+        creds = Credentials.from_authorized_user_file(str(TOKEN_FILE))
+        if creds and creds.expired and creds.refresh_token:
+            creds.refresh(GoogleRequest())
+        if not creds or not creds.valid:
+            print("[遷移] 舊版 token 無效，保留舊檔待重新登入")
+            return
+        try:
+            email = _fetch_email(creds)
+        except Exception as e:
+            # 舊 token 沒有 userinfo.email scope，無法取得 email
+            # 改用 placeholder，token 仍可正常呼叫 YouTube API
+            email = "migrated-account"
+            print(f"[遷移] 無法取得 email（{e}），使用 placeholder 名稱: {email}")
+        dest = _token_path(email)
+        dest.write_text(creds.to_json(), encoding="utf-8")
+        _set_current_email(email)
+        TOKEN_FILE.unlink()
+        print(f"[遷移] 舊版 token.json → tokens/{email}.json 完成")
+    except Exception as e:
+        print(f"[遷移] 遷移失敗（{e}），保留舊檔不影響啟動")
+
+
+def load_credentials() -> Credentials | None:
+    """載入當前帳號的 credential。支援多帳號 tokens/<email>.json 架構。"""
+    email = _get_current_email()
+    if not email:
         return None
-    creds = Credentials.from_authorized_user_file(str(TOKEN_FILE), SCOPES)
+    token_file = _token_path(email)
+    if not token_file.exists():
+        return None
+    # 不帶 SCOPES 載入，避免遷移過來的舊 token 因 scope 不符被拒
+    creds = Credentials.from_authorized_user_file(str(token_file))
     if creds and creds.expired and creds.refresh_token:
         creds.refresh(GoogleRequest())
-        TOKEN_FILE.write_text(creds.to_json())
+        token_file.write_text(creds.to_json(), encoding="utf-8")
     return creds if creds and creds.valid else None
 
 
@@ -301,7 +403,40 @@ def require_credentials() -> Credentials:
 @app.get("/auth/status")
 def auth_status():
     creds = load_credentials()
-    return {"logged_in": creds is not None}
+    accounts = _list_account_emails()
+    current = _get_current_email()
+    return {
+        "logged_in": creds is not None,
+        "current_account": current or "",
+        "accounts": accounts,
+    }
+
+
+@app.get("/auth/accounts")
+def auth_accounts():
+    """列出所有已授權帳號與當前帳號。"""
+    accounts = _list_account_emails()
+    current = _get_current_email()
+    creds = load_credentials()
+    return {
+        "logged_in": creds is not None,
+        "current": current or "",
+        "accounts": accounts,
+    }
+
+
+class SwitchAccountRequest(BaseModel):
+    email: str
+
+
+@app.post("/auth/switch")
+def auth_switch(body: SwitchAccountRequest):
+    """切換當前帳號。驗證 token 檔案存在後更新 current_account.txt。"""
+    token_file = _token_path(body.email)
+    if not token_file.exists():
+        raise HTTPException(status_code=404, detail=f"找不到帳號 {body.email} 的授權")
+    _set_current_email(body.email)
+    return {"current": body.email}
 
 
 @app.get("/auth/login")
@@ -309,6 +444,7 @@ def auth_login():
     """
     使用 InstalledAppFlow.run_local_server() 在背景執行授權流程。
     Google 建議 Desktop App 使用此方式，自動管理 localhost redirect URI。
+    多帳號模式：使用 prompt=select_account 強制讓使用者選擇帳號。
     """
     client_secret = _find_client_secret()
     if client_secret is None:
@@ -318,17 +454,35 @@ def auth_login():
         )
 
     def _do_oauth():
-        flow = InstalledAppFlow.from_client_secrets_file(
-            str(client_secret), scopes=SCOPES
-        )
-        # run_local_server 自動啟動本機 HTTP server、開啟瀏覽器、等待 callback
-        creds = flow.run_local_server(
-            port=0,           # 讓系統自動選可用 port
-            open_browser=True,
-            prompt="consent",
-            access_type="offline",
-        )
-        TOKEN_FILE.write_text(creds.to_json())
+        try:
+            print("[OAuth] 1/5 開始授權流程...", flush=True)
+            flow = InstalledAppFlow.from_client_secrets_file(
+                str(client_secret), scopes=SCOPES
+            )
+            print("[OAuth] 2/5 等待使用者完成 OAuth...", flush=True)
+            creds = flow.run_local_server(
+                port=0,
+                open_browser=True,
+                prompt="select_account",
+                access_type="offline",
+            )
+            print(f"[OAuth] 3/5 OAuth 完成, token={creds.token[:20]}...", flush=True)
+            # 取得 email 作為帳號識別 key
+            try:
+                email = _fetch_email(creds)
+                print(f"[OAuth] 4/5 取得 email: {email}", flush=True)
+            except Exception as e:
+                print(f"[OAuth] 4/5 無法取得 email（{e}），使用 unknown", flush=True)
+                email = "unknown"
+            # 存入 tokens/<email>.json
+            dest = _token_path(email)
+            dest.write_text(creds.to_json(), encoding="utf-8")
+            _set_current_email(email)
+            print(f"[OAuth] 5/5 帳號 {email} 授權完成，token 已存入 {dest}", flush=True)
+        except Exception as e:
+            import traceback
+            print(f"[OAuth] 授權流程失敗：{e}", flush=True)
+            traceback.print_exc()
 
     import threading
     t = threading.Thread(target=_do_oauth, daemon=True)
@@ -341,11 +495,36 @@ def auth_callback():
     return {"message": "callback received"}
 
 
+class LogoutRequest(BaseModel):
+    email: str | None = None
+
+
 @app.post("/auth/logout")
-def auth_logout():
+def auth_logout(body: LogoutRequest | None = None):
+    """登出指定帳號。若未指定 email 則登出當前帳號。"""
+    target = (body.email if body and body.email else None) or _get_current_email()
+    if not target:
+        return {"message": "沒有已登入的帳號"}
+
+    # 刪除該帳號的 token 檔
+    token_file = _token_path(target)
+    if token_file.exists():
+        token_file.unlink()
+
+    # 若登出的是當前帳號，自動切到剩餘的第一個帳號
+    current = _get_current_email()
+    if current == target:
+        remaining = _list_account_emails()
+        if remaining:
+            _set_current_email(remaining[0])
+        else:
+            _clear_current_email()
+
+    # 相容舊版：也清除可能殘留的 token.json
     if TOKEN_FILE.exists():
         TOKEN_FILE.unlink()
-    return {"message": "已登出"}
+
+    return {"message": f"已登出 {target}"}
 
 
 # ── 訂閱清單路由 ───────────────────────────────────────────────────────────────
@@ -415,14 +594,13 @@ async def get_subscriptions_latest_dates():
             break
 
     dates = {}
-    async with aiohttp.ClientSession() as session:
-        sem = asyncio.Semaphore(10)
-        async def _fetch(cid):
-            async with sem:
-                _, vlist = await fetch_channel_rss(session, cid, 1)
-                if vlist and len(vlist) > 0:
-                    return cid, vlist[0]["published"]
-                return cid, None
+    sem = asyncio.Semaphore(10)
+    async def _fetch(cid):
+        async with sem:
+            _, vlist = await fetch_channel_videos_api(creds, cid, 1)
+            if vlist and len(vlist) > 0:
+                return cid, vlist[0]["published"]
+            return cid, None
         
         tasks = [_fetch(cid) for cid in channels]
         results = await asyncio.gather(*tasks, return_exceptions=True)
@@ -435,82 +613,150 @@ async def get_subscriptions_latest_dates():
     return {"latest_dates": dates}
 
 
-_RSS_HEADERS = {
-    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/120.0 Safari/537.36"
-}
-
-
-async def fetch_channel_rss(
-    session: aiohttp.ClientSession,
-    channel_id: str,
-    limit: int,
-    channel_title: str = "",
-):
-    import xml.etree.ElementTree as ET
-    url = f"https://www.youtube.com/feeds/videos.xml?channel_id={channel_id}"
-    try:
-        async with session.get(url, timeout=aiohttp.ClientTimeout(total=15),
-                               headers=_RSS_HEADERS) as r:
-            if r.status != 200:
-                print(f"[RSS Error] {url} HTTP {r.status}")
-                return channel_id, []
-            text = await r.text()
-    except Exception as e:
-        print(f"[RSS Error] Request failed {url}: {e}")
+def _sync_fetch_channel_videos(creds, channel_id: str, limit: int, channel_title: str) -> tuple[str, list[dict]]:
+    youtube = build("youtube", "v3", credentials=creds)
+    uploads_id = _get_channel_uploads_playlist_id(youtube, channel_id)
+    if not uploads_id:
         return channel_id, []
-
-    ns = {
-        "atom": "http://www.w3.org/2005/Atom",
-        "yt": "http://www.youtube.com/xml/schemas/2015",
-        "media": "http://search.yahoo.com/mrss/",
-    }
+        
     try:
-        root = ET.fromstring(text)
-    except ET.ParseError:
-        return channel_id, []
-
-    videos = []
-    for entry in root.findall("atom:entry", ns)[:limit]:
-        video_id = entry.findtext("yt:videoId", namespaces=ns) or ""
-        title = entry.findtext("atom:title", namespaces=ns) or ""
-        published = entry.findtext("atom:published", namespaces=ns) or ""
-        thumbnail = f"https://i.ytimg.com/vi/{video_id}/mqdefault.jpg"
-        media_content = entry.find(".//media:content", ns)
-        duration_seconds: int | None = None
-        if media_content is not None:
-            raw = media_content.get("duration")
-            if raw is not None:
-                try:
-                    duration_seconds = int(raw)
-                except ValueError:
-                    pass
-        videos.append(
-            {
+        req = youtube.playlistItems().list(
+            part="snippet",
+            playlistId=uploads_id,
+            maxResults=limit
+        )
+        resp = req.execute()
+        consume_quota(1)
+        
+        items = resp.get("items", [])
+        videos = []
+        for item in items:
+            snippet = item.get("snippet", {})
+            video_id = snippet.get("resourceId", {}).get("videoId")
+            if not video_id:
+                continue
+                
+            title = snippet.get("title", "")
+            if not channel_title and snippet.get("channelTitle"):
+                channel_title = snippet.get("channelTitle")
+                
+            published = snippet.get("publishedAt", "")
+            thumbnail = snippet.get("thumbnails", {}).get("default", {}).get("url", f"https://i.ytimg.com/vi/{video_id}/mqdefault.jpg")
+            
+            videos.append({
                 "video_id": video_id,
                 "title": title,
                 "published": published,
                 "thumbnail": thumbnail,
                 "url": f"https://www.youtube.com/watch?v={video_id}",
-                "duration_seconds": duration_seconds,
                 "channel_id": channel_id,
                 "channel_title": channel_title,
-            }
-        )
-    return channel_id, videos
+                "duration_seconds": None,
+            })
+            
+        return channel_id, videos
+    except Exception as e:
+        print(f"[YouTube API Error] _sync_fetch_channel_videos for {channel_id}: {e}")
+        return channel_id, []
+
+async def fetch_channel_videos_api(creds, channel_id: str, limit: int, channel_title: str = ""):
+    return await asyncio.to_thread(_sync_fetch_channel_videos, creds, channel_id, limit, channel_title)
 
 
 @app.get("/subscriptions/{channel_id}/videos")
 async def get_channel_videos(channel_id: str):
     settings = load_settings()
     limit = settings["videos_per_channel"]
-    async with aiohttp.ClientSession() as session:
-        _, videos = await fetch_channel_rss(session, channel_id, limit)
-        
     creds = require_credentials()
+    _, videos = await fetch_channel_videos_api(creds, channel_id, limit)
     youtube = build("youtube", "v3", credentials=creds)
-    videos = enhance_and_filter_videos(youtube, videos)
+    videos = enhance_and_filter_videos(youtube, videos, apply_duration_filter=False)
     
     return {"videos": videos}
+
+
+_uploads_cache: dict[str, str] = {}
+
+def _get_channel_uploads_playlist_id(youtube, channel_id: str) -> str | None:
+    if channel_id in _uploads_cache:
+        return _uploads_cache[channel_id]
+    
+    try:
+        resp = youtube.channels().list(
+            part="contentDetails",
+            id=channel_id
+        ).execute()
+        consume_quota(1)
+        
+        items = resp.get("items", [])
+        if not items:
+            return None
+            
+        uploads_id = items[0].get("contentDetails", {}).get("relatedPlaylists", {}).get("uploads")
+        if uploads_id:
+            _uploads_cache[channel_id] = uploads_id
+            return uploads_id
+    except Exception as e:
+        print(f"[YouTube API Error] _get_channel_uploads_playlist_id: {e}")
+    return None
+
+
+@app.get("/channels/{channel_id}/videos")
+def get_channel_videos_paginated(channel_id: str, pageToken: str | None = None):
+    creds = require_credentials()
+    youtube = build("youtube", "v3", credentials=creds)
+    
+    uploads_id = _get_channel_uploads_playlist_id(youtube, channel_id)
+    if not uploads_id:
+        raise HTTPException(status_code=404, detail="找不到頻道的 Uploads 播放清單")
+        
+    try:
+        req = youtube.playlistItems().list(
+            part="snippet",
+            playlistId=uploads_id,
+            maxResults=50,
+            pageToken=pageToken
+        )
+        resp = req.execute()
+        consume_quota(1)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+        
+    next_page_token = resp.get("nextPageToken")
+    items = resp.get("items", [])
+    
+    videos = []
+    channel_title = ""
+    for item in items:
+        snippet = item.get("snippet", {})
+        video_id = snippet.get("resourceId", {}).get("videoId")
+        if not video_id:
+            continue
+            
+        title = snippet.get("title", "")
+        if not channel_title and snippet.get("channelTitle"):
+            channel_title = snippet.get("channelTitle")
+            
+        published = snippet.get("publishedAt", "")
+        thumbnail = snippet.get("thumbnails", {}).get("default", {}).get("url", f"https://i.ytimg.com/vi/{video_id}/mqdefault.jpg")
+        
+        videos.append({
+            "video_id": video_id,
+            "title": title,
+            "published": published,
+            "thumbnail": thumbnail,
+            "url": f"https://www.youtube.com/watch?v={video_id}",
+            "channel_id": channel_id,
+            "channel_title": channel_title,
+        })
+        
+    videos = enhance_and_filter_videos(youtube, videos, apply_duration_filter=False)
+    
+    return {
+        "items": videos,
+        "nextPageToken": next_page_token,
+        "channelTitle": channel_title
+    }
 
 
 # ── 設定路由 ───────────────────────────────────────────────────────────────────
@@ -553,6 +799,64 @@ def update_settings(body: SettingsUpdate):
     return settings
 
 
+# ── 發燒影片路由 ───────────────────────────────────────────────────────────────
+@app.get("/trending-videos")
+def get_trending_videos():
+    settings = load_settings()
+    min_sec = settings.get("min_duration_minutes", 3) * 60
+    max_sec = settings.get("max_duration_minutes", 60) * 60
+    
+    creds = require_credentials()
+    youtube = build("youtube", "v3", credentials=creds)
+    
+    try:
+        resp = youtube.videos().list(
+            part="snippet,contentDetails",
+            chart="mostPopular",
+            regionCode="TW",
+            maxResults=50
+        ).execute()
+        consume_quota(1)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+        
+    items = resp.get("items", [])
+    videos = []
+    
+    for item in items:
+        if item.get("snippet", {}).get("liveBroadcastContent") == "upcoming":
+            continue
+            
+        duration_iso = item.get("contentDetails", {}).get("duration", "")
+        dur_sec = parse_iso_duration(duration_iso)
+        
+        if not (min_sec <= dur_sec <= max_sec):
+            continue
+            
+        snippet = item.get("snippet", {})
+        video_id = item.get("id")
+        if not video_id:
+            continue
+            
+        title = snippet.get("title", "")
+        channel_id = snippet.get("channelId", "")
+        channel_title = snippet.get("channelTitle", "")
+        published = snippet.get("publishedAt", "")
+        thumbnail = snippet.get("thumbnails", {}).get("default", {}).get("url", f"https://i.ytimg.com/vi/{video_id}/mqdefault.jpg")
+        
+        videos.append({
+            "video_id": video_id,
+            "title": title,
+            "published": published,
+            "thumbnail": thumbnail,
+            "url": f"https://www.youtube.com/watch?v={video_id}",
+            "channel_id": channel_id,
+            "channel_title": channel_title,
+            "duration_seconds": dur_sec,
+        })
+        
+    return {"videos": videos}
+
 # ── 最新影片路由 ───────────────────────────────────────────────────────────────
 @app.get("/latest-videos")
 async def get_latest_videos(hours: int | None = None):
@@ -583,20 +887,19 @@ async def get_latest_videos(hours: int | None = None):
         if not page_token:
             break
 
-    # 並發擷取 RSS
+    # 並發擷取 API
     limit = settings.get("videos_per_channel", 5)
-    async with aiohttp.ClientSession() as session:
-        sem = asyncio.Semaphore(5)
+    sem = asyncio.Semaphore(5)
 
-        async def _bound_fetch(ch):
-            async with sem:
-                return await fetch_channel_rss(session, ch["channel_id"], limit, ch["title"])
+    async def _bound_fetch(ch):
+        async with sem:
+            return await fetch_channel_videos_api(creds, ch["channel_id"], limit, ch["title"])
 
-        tasks = [
-            _bound_fetch(ch)
-            for ch in channels
-        ]
-        results = await asyncio.gather(*tasks, return_exceptions=True)
+    tasks = [
+        _bound_fetch(ch)
+        for ch in channels
+    ]
+    results = await asyncio.gather(*tasks, return_exceptions=True)
 
     # 過濾時間範圍並排序
     cutoff = datetime.now(timezone.utc) - timedelta(hours=hours)
@@ -616,6 +919,116 @@ async def get_latest_videos(hours: int | None = None):
     videos.sort(key=lambda v: v["published"], reverse=True)
     videos = videos[:100]
     videos = enhance_and_filter_videos(youtube, videos)
+    return {"videos": videos}
+
+
+# ── 搜尋影片路由 ───────────────────────────────────────────────────────────────
+def _sync_search_videos_yt_dlp(keyword: str) -> list[dict]:
+    import yt_dlp
+    ydl_opts = {
+        "quiet": True,
+        "extract_flat": True,
+        "default_search": "ytsearch50",
+    }
+    
+    videos = []
+    with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+        try:
+            info = ydl.extract_info(f"ytsearch50:{keyword}", download=False)
+            if "entries" in info:
+                for entry in info["entries"]:
+                    if not entry:
+                        continue
+                    
+                    video_id = entry.get("id")
+                    if not video_id:
+                        continue
+                        
+                    duration = entry.get("duration")
+                            
+                    thumbnails = entry.get("thumbnails", [])
+                    thumbnail_url = thumbnails[0].get("url") if thumbnails else f"https://i.ytimg.com/vi/{video_id}/mqdefault.jpg"
+                            
+                    videos.append({
+                        "video_id": video_id,
+                        "title": entry.get("title", ""),
+                        "published": "",
+                        "thumbnail": thumbnail_url,
+                        "url": f"https://www.youtube.com/watch?v={video_id}",
+                        "channel_id": entry.get("channel_id", ""),
+                        "channel_title": entry.get("uploader", ""),
+                        "duration_seconds": duration,
+                    })
+        except Exception as e:
+            print(f"[yt-dlp Search Error] {e}")
+            
+    return videos
+
+@app.get("/search-videos")
+async def search_videos(q: str):
+    require_credentials()
+    if not q or not q.strip():
+        return {"videos": []}
+    
+    videos = await asyncio.to_thread(_sync_search_videos_yt_dlp, q.strip())
+    return {"videos": videos}
+
+
+# ── 網址預覽路由 ───────────────────────────────────────────────────────────────
+def _sync_url_preview_yt_dlp(url: str) -> list[dict]:
+    import yt_dlp
+    ydl_opts = {
+        "quiet": True,
+        "extract_flat": True,
+    }
+    
+    videos = []
+    with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+        try:
+            info = ydl.extract_info(url, download=False)
+            if not info:
+                return []
+                
+            entries = info.get("entries")
+            if entries is None:
+                entries = [info]  # 單一影片
+                
+            for entry in entries:
+                if not entry:
+                    continue
+                
+                video_id = entry.get("id")
+                if not video_id:
+                    continue
+                    
+                duration = entry.get("duration")
+                        
+                thumbnails = entry.get("thumbnails", [])
+                thumbnail_url = thumbnails[0].get("url") if thumbnails else f"https://i.ytimg.com/vi/{video_id}/mqdefault.jpg"
+                        
+                videos.append({
+                    "video_id": video_id,
+                    "title": entry.get("title", ""),
+                    "published": "",
+                    "thumbnail": thumbnail_url,
+                    "url": f"https://www.youtube.com/watch?v={video_id}",
+                    "channel_id": entry.get("channel_id", ""),
+                    "channel_title": entry.get("uploader", ""),
+                    "duration_seconds": duration,
+                })
+        except Exception as e:
+            print(f"[yt-dlp URL Preview Error] {e}")
+            raise HTTPException(status_code=400, detail=f"網址解析失敗: {e}")
+            
+    return videos
+
+@app.get("/url-preview")
+async def url_preview(url: str):
+    require_credentials()
+    if not url or not url.strip():
+        raise HTTPException(status_code=400, detail="網址不能為空")
+    
+    videos = await asyncio.to_thread(_sync_url_preview_yt_dlp, url.strip())
     return {"videos": videos}
 
 

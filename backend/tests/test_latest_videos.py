@@ -13,6 +13,12 @@ def _mock_valid_creds():
     return creds
 
 
+@pytest.fixture(autouse=True)
+def mock_enhance_and_filter():
+    with patch("main.enhance_and_filter_videos", side_effect=lambda yt, v: v):
+        yield
+
+
 def _make_video(video_id: str, hours_ago: float, channel_id: str = "UC_test", channel_title: str = "Test") -> dict:
     pub = (datetime.now(timezone.utc) - timedelta(hours=hours_ago)).isoformat()
     return {
@@ -46,9 +52,12 @@ def _mock_youtube_subscriptions(channels: list[dict]):
 # ── 未登入 ─────────────────────────────────────────────────────────────────────
 async def test_latest_videos_requires_auth(client):
     """未登入時應回傳 401"""
-    async with client as c:
-        r = await c.get("/latest-videos")
-    assert r.status_code == 401
+    with patch("main.require_credentials") as mock_req:
+        from fastapi import HTTPException
+        mock_req.side_effect = HTTPException(status_code=401, detail="Missing auth")
+        async with client as c:
+            r = await c.get("/latest-videos")
+        assert r.status_code == 401
 
 
 # ── 正常取得最新影片 ────────────────────────────────────────────────────────────
@@ -60,7 +69,7 @@ async def test_latest_videos_returns_recent(client):
 
     with patch("main.load_credentials", return_value=_mock_valid_creds()), \
          patch("main.build", return_value=_mock_youtube_subscriptions(channels)), \
-         patch("main.fetch_channel_rss", return_value=("UC_a", [recent, old])):
+         patch("main.fetch_channel_videos_api", return_value=("UC_a", [recent, old])):
         async with client as c:
             r = await c.get("/latest-videos?hours=24")
 
@@ -80,7 +89,7 @@ async def test_latest_videos_sorted_newest_first(client):
 
     with patch("main.load_credentials", return_value=_mock_valid_creds()), \
          patch("main.build", return_value=_mock_youtube_subscriptions(channels)), \
-         patch("main.fetch_channel_rss", return_value=("UC_a", [v3, v1, v2])):
+         patch("main.fetch_channel_videos_api", return_value=("UC_a", [v3, v1, v2])):
         async with client as c:
             r = await c.get("/latest-videos?hours=24")
 
@@ -111,7 +120,7 @@ async def test_latest_videos_uses_settings_hours(client):
 
     with patch("main.load_credentials", return_value=_mock_valid_creds()), \
          patch("main.build", return_value=_mock_youtube_subscriptions(channels)), \
-         patch("main.fetch_channel_rss", return_value=("UC_a", [v_within, v_outside])):
+         patch("main.fetch_channel_videos_api", return_value=("UC_a", [v_within, v_outside])):
         async with client as c:
             # 先設定 latest_hours=24（預設），不傳 hours 參數
             await c.put("/settings", json={"latest_hours": 24})
@@ -133,7 +142,7 @@ async def test_latest_videos_rss_error_skipped(client):
 
     call_args = []
 
-    async def fake_fetch(session, channel_id, limit, channel_title=""):
+    async def fake_fetch(youtube, channel_id, limit, channel_title=""):
         call_args.append(channel_id)
         if channel_id == "UC_bad":
             raise Exception("RSS timeout")
@@ -141,7 +150,7 @@ async def test_latest_videos_rss_error_skipped(client):
 
     with patch("main.load_credentials", return_value=_mock_valid_creds()), \
          patch("main.build", return_value=_mock_youtube_subscriptions(channels)), \
-         patch("main.fetch_channel_rss", side_effect=fake_fetch):
+         patch("main.fetch_channel_videos_api", side_effect=fake_fetch):
         async with client as c:
             r = await c.get("/latest-videos?hours=24")
 
@@ -168,12 +177,12 @@ async def test_latest_videos_capped_at_100(client):
         ]
     }
 
-    async def fake_fetch(session, channel_id, limit, channel_title=""):
+    async def fake_fetch(youtube, channel_id, limit, channel_title=""):
         return channel_id, all_videos[:30]
 
     with patch("main.load_credentials", return_value=_mock_valid_creds()), \
          patch("main.build", return_value=mock_yt), \
-         patch("main.fetch_channel_rss", side_effect=fake_fetch):
+         patch("main.fetch_channel_videos_api", side_effect=fake_fetch):
         async with client as c:
             r = await c.get("/latest-videos?hours=9999")
 

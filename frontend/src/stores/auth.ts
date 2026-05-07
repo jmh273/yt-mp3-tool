@@ -5,10 +5,18 @@ import router from '@/router'
 
 export const useAuthStore = defineStore('auth', () => {
   const loggedIn = ref(false)
+  const currentAccount = ref('')
+  const accounts = ref<string[]>([])
 
   async function checkStatus() {
-    const data = await apiGet<{ logged_in: boolean }>('/auth/status')
+    const data = await apiGet<{
+      logged_in: boolean
+      current_account: string
+      accounts: string[]
+    }>('/auth/status')
     loggedIn.value = data.logged_in
+    currentAccount.value = data.current_account ?? ''
+    accounts.value = data.accounts ?? []
   }
 
   async function login() {
@@ -17,9 +25,41 @@ export const useAuthStore = defineStore('auth', () => {
 
   async function logout() {
     await apiPost('/auth/logout')
-    loggedIn.value = false
-    await router.push('/login')
+    await checkStatus()
+    if (!loggedIn.value) {
+      await router.push('/login')
+    }
   }
 
-  return { loggedIn, checkStatus, login, logout }
+  /** 登出指定帳號 */
+  async function logoutAccount(email: string) {
+    await apiPost('/auth/logout', { email })
+    await checkStatus()
+    if (!loggedIn.value) {
+      await router.push('/login')
+    }
+  }
+
+  /** 切換當前帳號 */
+  async function switchAccount(email: string) {
+    await apiPost('/auth/switch', { email })
+    currentAccount.value = email
+  }
+
+  /** 新增帳號（觸發 OAuth） */
+  async function addAccount() {
+    await apiGet('/auth/login')
+  }
+
+  return {
+    loggedIn,
+    currentAccount,
+    accounts,
+    checkStatus,
+    login,
+    logout,
+    logoutAccount,
+    switchAccount,
+    addAccount,
+  }
 })

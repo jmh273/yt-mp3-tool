@@ -16,6 +16,7 @@ def _mock_youtube_api(channels: list[dict]):
     """建立模擬 YouTube API 回應，單頁無分頁"""
     items = [
         {
+            "id": f"sub_{ch['channel_id']}",
             "snippet": {
                 "title": ch["title"],
                 "resourceId": {"channelId": ch["channel_id"]},
@@ -77,12 +78,12 @@ async def test_subscriptions_empty(client):
 
 async def test_subscriptions_pagination(client):
     """多頁訂閱應正確合併所有結果"""
-    page1_items = [{"snippet": {
+    page1_items = [{"id": "sub_1", "snippet": {
         "title": "Ch1",
         "resourceId": {"channelId": "UC_1"},
         "thumbnails": {"default": {"url": ""}},
     }}]
-    page2_items = [{"snippet": {
+    page2_items = [{"id": "sub_2", "snippet": {
         "title": "Ch2",
         "resourceId": {"channelId": "UC_2"},
         "thumbnails": {"default": {"url": ""}},

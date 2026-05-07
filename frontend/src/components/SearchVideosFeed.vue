@@ -1,13 +1,25 @@
 <template>
-  <div class="latest-feed">
+  <div class="search-feed">
     <div class="feed-header">
-      <h2>最新影片</h2>
-      <span class="hours-badge">{{ latestHours }}h 內</span>
+      <h2>🔍 搜尋影片</h2>
+      <div class="search-bar">
+        <input 
+          type="text" 
+          v-model="searchInput" 
+          @keyup.enter="handleSearch"
+          placeholder="輸入關鍵字 (如: Lo-fi hip hop)" 
+          class="search-input"
+        />
+        <button class="search-btn" @click="handleSearch" :disabled="loading">
+          {{ loading ? '搜尋中...' : '搜尋' }}
+        </button>
+      </div>
     </div>
 
     <div v-if="loading" class="status">載入中...</div>
     <div v-else-if="error" class="status error">{{ error }}</div>
-    <div v-else-if="videos.length === 0" class="status">此時間範圍內無新影片</div>
+    <div v-else-if="hasSearched && videos.length === 0" class="status">查無符合條件的影片</div>
+    <div v-else-if="!hasSearched" class="status empty-state">請輸入關鍵字開始搜尋</div>
 
     <ul v-else class="video-grid">
       <li v-for="v in videos" :key="v.video_id" class="video-item">
@@ -25,9 +37,6 @@
         <div class="info">
           <span class="title" :title="v.title">{{ v.title }} <span v-if="download.isDownloaded(v.video_id)" class="dl-badge">✅ 已下載</span></span>
           <span class="channel">{{ v.channel_title }}</span>
-          <div class="meta">
-            <span class="date">{{ formatDate(v.published) }}</span>
-          </div>
         </div>
       </li>
     </ul>
@@ -35,31 +44,39 @@
 </template>
 
 <script setup lang="ts">
-import { ref, onMounted } from 'vue'
+import { ref } from 'vue'
 import { apiGet } from '@/api'
 import { useDownloadStore, type VideoItem } from '@/stores/download'
 import { useQuotaStore } from '@/stores/quota'
 
 const download = useDownloadStore()
 const quota = useQuotaStore()
-const videos = ref<VideoItem[]>([])
-const loading = ref(true)
-const error = ref('')
-const latestHours = ref(24)
 
-onMounted(async () => {
+const searchInput = ref('')
+const videos = ref<VideoItem[]>([])
+const loading = ref(false)
+const error = ref('')
+const hasSearched = ref(false)
+
+async function handleSearch() {
+  const q = searchInput.value.trim()
+  if (!q) return
+
+  loading.value = true
+  error.value = ''
+  hasSearched.value = true
+  videos.value = []
+
   try {
-    const settings = await apiGet<{ latest_hours?: number }>('/settings')
-    latestHours.value = settings.latest_hours ?? 24
-    const data = await apiGet<{ videos: VideoItem[] }>(`/latest-videos?hours=${latestHours.value}`)
-    videos.value = data.videos
+    const data = await apiGet<{ videos: VideoItem[] }>(`/search-videos?q=${encodeURIComponent(q)}`)
+    videos.value = data.videos || []
   } catch (e: any) {
-    error.value = '無法載入最新影片'
+    error.value = '無法載入搜尋結果'
   } finally {
     loading.value = false
     quota.refresh()
   }
-})
+}
 
 function formatDuration(seconds: number | null): string {
   if (seconds === null || seconds === undefined) return '—'
@@ -71,31 +88,56 @@ function formatDuration(seconds: number | null): string {
   }
   return `${m}:${String(s).padStart(2, '0')}`
 }
-
-function formatDate(iso: string): string {
-  if (!iso) return ''
-  const diff = Date.now() - new Date(iso).getTime()
-  const mins = Math.floor(diff / 60000)
-  if (mins < 60) return `${mins} 分鐘前`
-  const hrs = Math.floor(mins / 60)
-  if (hrs < 24) return `${hrs} 小時前`
-  return `${Math.floor(hrs / 24)} 天前`
-}
 </script>
 
 <style scoped>
-.latest-feed { padding: 1rem; }
-.feed-header { display: flex; align-items: center; gap: 0.75rem; margin-bottom: 1rem; }
-.feed-header h2 { margin: 0; font-size: 1.1rem; }
-.hours-badge {
-  background: #f0f0f0;
-  border-radius: 12px;
-  padding: 0.15rem 0.6rem;
-  font-size: 0.78rem;
-  color: #666;
+.search-feed { padding: 1rem; }
+.feed-header { 
+  display: flex; 
+  flex-direction: column;
+  gap: 1rem; 
+  margin-bottom: 1.5rem; 
+}
+.feed-header h2 { margin: 0; font-size: 1.2rem; }
+
+.search-bar {
+  display: flex;
+  gap: 0.5rem;
+  width: 100%;
+  max-width: 500px;
+}
+.search-input {
+  flex: 1;
+  padding: 0.6rem 1rem;
+  border: 1px solid #ddd;
+  border-radius: 8px;
+  font-size: 0.95rem;
+  outline: none;
+  transition: border-color 0.2s;
+}
+.search-input:focus {
+  border-color: #646cff;
+}
+.search-btn {
+  padding: 0.6rem 1.2rem;
+  background-color: #646cff;
+  color: white;
+  border: none;
+  border-radius: 8px;
+  font-weight: 500;
+  cursor: pointer;
+  transition: background-color 0.2s;
+}
+.search-btn:hover:not(:disabled) {
+  background-color: #535bf2;
+}
+.search-btn:disabled {
+  background-color: #a0a4ff;
+  cursor: not-allowed;
 }
 
 .status { padding: 2rem; color: #888; text-align: center; }
+.empty-state { color: #aaa; font-style: italic; }
 .status.error { color: red; }
 
 ul { list-style: none; padding: 0; margin: 0; }
@@ -119,7 +161,7 @@ ul { list-style: none; padding: 0; margin: 0; }
 
 .thumb-wrapper { 
   position: relative; 
-  width: 140px; /* Reduced to ~1/2 size */
+  width: 140px; 
   flex-shrink: 0;
   aspect-ratio: 16 / 9; 
   border-radius: 6px; 
@@ -132,8 +174,6 @@ ul { list-style: none; padding: 0; margin: 0; }
 .title { font-size: 0.85rem; font-weight: 500; display: -webkit-box; -webkit-line-clamp: 2; line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; text-overflow: ellipsis; white-space: normal; line-height: 1.4; margin-top: -0.2rem; }
 .dl-badge { font-size: 0.7rem; color: #4caf50; font-weight: normal; margin-left: 0.3rem; white-space: nowrap; display: inline-block; }
 .channel { font-size: 0.75rem; color: #555; }
-.meta { display: flex; gap: 0.6rem; align-items: center; margin-top: auto; }
-.date { font-size: 0.7rem; color: #aaa; }
 .duration {
   position: absolute;
   bottom: 4px;

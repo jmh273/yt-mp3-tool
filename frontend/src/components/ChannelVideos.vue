@@ -1,28 +1,40 @@
 <template>
   <div class="channel-videos">
-    <div v-if="loading" class="loading">載入中...</div>
+    <div class="channel-header">
+      <button class="back-btn" @click="$emit('back')">← 回最新動態</button>
+      <h2>正在觀看頻道：{{ channelTitle || '載入中...' }}</h2>
+    </div>
+    <div v-if="loading && videos.length === 0" class="loading">載入中...</div>
     <div v-else-if="error" class="error">{{ error }}</div>
-    <ul v-else class="video-grid">
-      <li v-for="v in videos" :key="v.video_id" class="video-item">
-        <div class="thumb-wrapper">
-          <input
-            type="checkbox"
-            class="video-checkbox"
-            :checked="download.isSelected(v.video_id) || download.isDownloaded(v.video_id)"
-            :disabled="download.isDownloaded(v.video_id)"
-            @change="download.toggle(v)"
-          />
-          <img :src="v.thumbnail" :alt="v.title" class="thumb" />
-          <span v-if="v.duration_seconds != null" class="duration">{{ formatDuration(v.duration_seconds) }}</span>
-        </div>
-        <div class="info">
-          <span class="title">{{ v.title }} <span v-if="download.isDownloaded(v.video_id)" class="dl-badge">✅ 已下載</span></span>
-          <div class="meta">
-            <span class="date">{{ formatDate(v.published) }}</span>
+    <div v-else>
+      <ul class="video-grid">
+        <li v-for="v in videos" :key="v.video_id" class="video-item">
+          <div class="thumb-wrapper">
+            <input
+              type="checkbox"
+              class="video-checkbox"
+              :checked="download.isSelected(v.video_id) || download.isDownloaded(v.video_id)"
+              :disabled="download.isDownloaded(v.video_id)"
+              @change="download.toggle(v)"
+            />
+            <img :src="v.thumbnail" :alt="v.title" class="thumb" />
+            <span v-if="v.duration_seconds != null" class="duration">{{ formatDuration(v.duration_seconds) }}</span>
           </div>
-        </div>
-      </li>
-    </ul>
+          <div class="info">
+            <span class="title" :title="v.title">{{ v.title }} <span v-if="download.isDownloaded(v.video_id)" class="dl-badge">✅ 已下載</span></span>
+            <div class="meta">
+              <span class="date">{{ formatDate(v.published) }}</span>
+            </div>
+          </div>
+        </li>
+      </ul>
+      <div class="load-more-container" v-if="nextPageToken">
+        <button class="load-more-btn" @click="loadMore" :disabled="loadingMore">
+          {{ loadingMore ? '載入中...' : '載入更多' }}
+        </button>
+      </div>
+      <div v-else-if="videos.length > 0" class="end-msg">已無更多影片</div>
+    </div>
   </div>
 </template>
 
@@ -33,23 +45,51 @@ import { useDownloadStore, type VideoItem } from '@/stores/download'
 import { useQuotaStore } from '@/stores/quota'
 
 const props = defineProps<{ channelId: string }>()
+const emit = defineEmits<{ (e: 'back'): void }>()
 const download = useDownloadStore()
 const quota = useQuotaStore()
+
 const videos = ref<VideoItem[]>([])
+const channelTitle = ref('')
+const nextPageToken = ref('')
 const loading = ref(true)
+const loadingMore = ref(false)
 const error = ref('')
 
-onMounted(async () => {
+async function fetchPage(token?: string) {
+  let url = `/channels/${props.channelId}/videos`
+  if (token) {
+    url += `?pageToken=${token}`
+  }
+  
   try {
-    const data = await apiGet<{ videos: VideoItem[] }>(`/subscriptions/${props.channelId}/videos`)
-    videos.value = data.videos
+    const data = await apiGet<{ items: VideoItem[], nextPageToken: string, channelTitle: string }>(url)
+    if (token) {
+      videos.value.push(...data.items)
+    } else {
+      videos.value = data.items
+      channelTitle.value = data.channelTitle
+    }
+    nextPageToken.value = data.nextPageToken || ''
   } catch (e: any) {
-    error.value = '無法載入影片'
+    error.value = '無法載入影片：' + e.message
   } finally {
-    loading.value = false
     quota.refresh()
   }
+}
+
+onMounted(async () => {
+  loading.value = true
+  await fetchPage()
+  loading.value = false
 })
+
+async function loadMore() {
+  if (!nextPageToken.value || loadingMore.value) return
+  loadingMore.value = true
+  await fetchPage(nextPageToken.value)
+  loadingMore.value = false
+}
 
 function formatDate(iso: string) {
   return iso ? new Date(iso).toLocaleDateString('zh-TW') : ''
@@ -65,7 +105,12 @@ function formatDuration(seconds: number): string {
 </script>
 
 <style scoped>
-.channel-videos { padding: 0.5rem 1rem; }
+.channel-videos { padding: 0.5rem 1rem; padding-bottom: 2rem; }
+.channel-header { margin-bottom: 1rem; padding-bottom: 0.5rem; border-bottom: 1px solid #eee; display: flex; align-items: center; gap: 1rem; }
+.channel-header h2 { margin: 0; font-size: 1.1rem; color: #333; }
+.back-btn { padding: 0.3rem 0.6rem; border: 1px solid #ccc; background: #fff; border-radius: 4px; cursor: pointer; font-size: 0.85rem; }
+.back-btn:hover { background: #f5f5f5; }
+
 ul { list-style: none; padding: 0; margin: 0; }
 .video-grid {
   display: grid;
@@ -87,7 +132,7 @@ ul { list-style: none; padding: 0; margin: 0; }
 
 .thumb-wrapper { 
   position: relative; 
-  width: 140px; /* Reduced to ~1/2 size */
+  width: 140px; 
   flex-shrink: 0;
   aspect-ratio: 16 / 9; 
   border-radius: 6px; 
@@ -104,4 +149,18 @@ ul { list-style: none; padding: 0; margin: 0; }
 .duration { position: absolute; bottom: 4px; right: 4px; background: rgba(0,0,0,0.8); color: white; padding: 2px 4px; border-radius: 4px; font-size: 0.7rem; line-height: 1; font-variant-numeric: tabular-nums; }
 .loading, .error { padding: 0.5rem; color: #666; }
 .error { color: red; }
+
+.load-more-container { margin-top: 1.5rem; text-align: center; }
+.load-more-btn {
+  padding: 0.6rem 1.5rem;
+  background-color: #f0f0f0;
+  border: 1px solid #ccc;
+  border-radius: 6px;
+  cursor: pointer;
+  font-size: 0.95rem;
+  transition: background-color 0.2s;
+}
+.load-more-btn:hover:not(:disabled) { background-color: #e0e0e0; }
+.load-more-btn:disabled { opacity: 0.6; cursor: not-allowed; }
+.end-msg { margin-top: 1.5rem; text-align: center; color: #999; font-size: 0.9rem; }
 </style>
