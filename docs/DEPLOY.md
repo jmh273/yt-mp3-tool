@@ -6,9 +6,9 @@
 
 ## Release 前 checklist（在 dev VM 跑）
 
-1. 確認後端 + 前端在跑、已 Google 登入
-2. **跑完整 walkthrough 測試**：`python ui-tests/feature_walkthrough.py`
-3. 開 `ui-tests/feature_walkthrough_report.html`，確認**全部 12 個案例都綠燈** (PASS)
+1. 確認後端 + 前端在跑、已執行 `npm run e2e:auth --prefix frontend` 完成 Google 登入並存下 storage state
+2. **跑完整 walkthrough 測試**：`npm run e2e --prefix frontend`
+3. 開 `frontend/e2e/report/walkthrough.html`，確認**全部 17 個案例都綠燈** (PASS)
 4. 任何案例失敗 → 修 → 再跑直到全綠 → 才能進到下一步
 5. 推 tag：`git tag v0.X.Y && git push --tags`
 6. 等 GitHub Actions build → release 出來

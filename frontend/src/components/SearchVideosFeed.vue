@@ -31,7 +31,7 @@
             :disabled="download.isDownloaded(v.video_id)"
             @change="download.toggle(v)"
           />
-          <img :src="v.thumbnail" :alt="v.title" class="thumb" />
+          <img :src="v.thumbnail" :alt="v.title" class="thumb" @click="player.open(v.video_id)" />
           <span class="duration">{{ formatDuration(v.duration_seconds ?? null) }}</span>
         </div>
         <div class="info">
@@ -48,9 +48,11 @@ import { ref } from 'vue'
 import { apiGet } from '@/api'
 import { useDownloadStore, type VideoItem } from '@/stores/download'
 import { useQuotaStore } from '@/stores/quota'
+import { usePlayerStore } from '@/stores/player'
 
 const download = useDownloadStore()
 const quota = useQuotaStore()
+const player = usePlayerStore()
 
 const searchInput = ref('')
 const videos = ref<VideoItem[]>([])
@@ -168,7 +170,8 @@ ul { list-style: none; padding: 0; margin: 0; }
   overflow: hidden; 
   background: #eee; 
 }
-.thumb { width: 100%; height: 100%; object-fit: cover; display: block; }
+.thumb { width: 100%; height: 100%; object-fit: cover; display: block; cursor: pointer; transition: opacity 0.15s; }
+.thumb:hover { opacity: 0.92; }
 .video-checkbox { position: absolute; top: 6px; left: 6px; z-index: 2; transform: scale(1.2); cursor: pointer; }
 .info { display: flex; flex-direction: column; gap: 0.3rem; flex: 1; min-width: 0; }
 .title { font-size: 0.85rem; font-weight: 500; display: -webkit-box; -webkit-line-clamp: 2; line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; text-overflow: ellipsis; white-space: normal; line-height: 1.4; margin-top: -0.2rem; }

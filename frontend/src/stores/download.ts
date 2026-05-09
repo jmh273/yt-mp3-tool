@@ -11,6 +11,7 @@ export interface VideoItem {
   duration_seconds?: number | null
   channel_id?: string
   channel_title?: string
+  view_count?: number
 }
 
 export interface ProgressItem {

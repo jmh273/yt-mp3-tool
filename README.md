@@ -84,17 +84,25 @@ npm run dev
 
 ## 完整 UI Walkthrough 測試（release 前驗收）
 
-執行：
+一次性 setup（首次或 token 過期時）：
 
 ```bash
-python ui-tests/feature_walkthrough.py
+npm run e2e:auth --prefix frontend
 ```
 
-前置條件：後端 (uvicorn :8000) + 前端 (vite :5173) 都在跑、已在 http://localhost:5173 完成 Google 登入。
+會開瀏覽器，請完成 Google 登入；登入後本工具自動把 storage state 存到 `frontend/e2e/.auth/storageState.json`，後續測試免重複登入。
 
-12 個測試案例（~50 步驟）涵蓋全部 user-visible 功能（啟動 / 搜尋 / 頻道 / 影片勾選 / 最新影片 / 設定 / 右欄分頁 / 音量正規化 / rename / 登出）。每步驟都有繁中操作敘述 + 截圖。
+執行 walkthrough：
 
-完成後輸出 `ui-tests/feature_walkthrough_report.html` — 開瀏覽器看，全綠才適合 release。
+```bash
+npm run e2e --prefix frontend
+```
+
+前置條件：後端 (uvicorn :8000) + 前端 (vite :5173) 都在跑、已執行過 `npm run e2e:auth`。
+
+17 個測試案例（~80 步驟）涵蓋全部 user-visible 功能（啟動 / 搜尋 / 頻道 / 影片勾選 / 最新影片 / 設定 / 右欄分頁 / 音量正規化 / rename / 發燒影片 / 影片搜尋 / URL 下載 / 影片播放 modal / 下載流程 / 配額計數）。每步驟都有繁中操作敘述 + 截圖。
+
+完成後輸出 `frontend/e2e/report/walkthrough.html` — 開瀏覽器看，全綠才適合 release。
 
 ## 部署到其他 Windows PC
 

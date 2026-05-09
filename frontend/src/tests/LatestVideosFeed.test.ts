@@ -3,6 +3,7 @@ import { mount, flushPromises } from '@vue/test-utils'
 import { setActivePinia, createPinia } from 'pinia'
 import LatestVideosFeed from '@/components/LatestVideosFeed.vue'
 import { useDownloadStore } from '@/stores/download'
+import { usePlayerStore } from '@/stores/player'
 import { snap, extractCss } from './snap'
 
 vi.mock('@/api', () => ({
@@ -131,6 +132,21 @@ describe('LatestVideosFeed', () => {
     await flushPromises()
 
     expect(wrapper.find('.date').text()).toContain('分鐘前')
+  })
+
+  it('點縮圖呼叫 player.open(video_id)', async () => {
+    const { apiGet } = await import('@/api')
+    vi.mocked(apiGet)
+      .mockResolvedValueOnce({ latest_hours: 24 })
+      .mockResolvedValueOnce({ videos: [makeVideo('v1', 1)] })
+
+    const wrapper = mount(LatestVideosFeed)
+    await flushPromises()
+
+    const player = usePlayerStore()
+    await wrapper.find('.thumb').trigger('click')
+    expect(player.currentVideoId).toBe('v1')
+    expect(player.isOpen).toBe(true)
   })
 
   it('超過 24 小時的影片顯示「X 天前」', async () => {

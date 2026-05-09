@@ -281,16 +281,20 @@ def _current_pt_date() -> str:
     return datetime.now(timezone(timedelta(hours=-8))).strftime("%Y-%m-%d")
 
 
+import threading
+_quota_lock = threading.Lock()
+
 def consume_quota(amount: int = 1) -> None:
     """記錄一次 YouTube API 呼叫消耗。跨 PT 日期會自動重置計數。"""
-    settings = load_settings()
-    today = _current_pt_date()
-    if settings.get("quota_date") != today:
-        settings["quota_used"] = amount
-        settings["quota_date"] = today
-    else:
-        settings["quota_used"] = int(settings.get("quota_used", 0)) + amount
-    save_settings(settings)
+    with _quota_lock:
+        settings = load_settings()
+        today = _current_pt_date()
+        if settings.get("quota_date") != today:
+            settings["quota_used"] = amount
+            settings["quota_date"] = today
+        else:
+            settings["quota_used"] = int(settings.get("quota_used", 0)) + amount
+        save_settings(settings)
 
 
 # ── 多帳號 token 工具函式 ─────────────────────────────────────────────────────
@@ -595,40 +599,60 @@ async def get_subscriptions_latest_dates():
 
     dates = {}
     sem = asyncio.Semaphore(10)
+
     async def _fetch(cid):
         async with sem:
             _, vlist = await fetch_channel_videos_api(creds, cid, 1)
             if vlist and len(vlist) > 0:
                 return cid, vlist[0]["published"]
             return cid, None
-        
-        tasks = [_fetch(cid) for cid in channels]
-        results = await asyncio.gather(*tasks, return_exceptions=True)
-        
-        for res in results:
-            if not isinstance(res, Exception):
-                cid, pub = res
-                if pub:
-                    dates[cid] = pub
+
+    tasks = [_fetch(cid) for cid in channels]
+    results = await asyncio.gather(*tasks, return_exceptions=True)
+
+    for res in results:
+        if not isinstance(res, Exception):
+            cid, pub = res
+            if pub:
+                dates[cid] = pub
     return {"latest_dates": dates}
 
 
-def _sync_fetch_channel_videos(creds, channel_id: str, limit: int, channel_title: str) -> tuple[str, list[dict]]:
-    youtube = build("youtube", "v3", credentials=creds)
-    uploads_id = _get_channel_uploads_playlist_id(youtube, channel_id)
+async def fetch_channel_videos_api(creds, channel_id: str, limit: int, channel_title: str = ""):
+    # 巧妙利用: YouTube 頻道 ID (UC...) 轉成上傳播放清單 ID 只要把前兩碼換成 UU
+    if channel_id.startswith("UC"):
+        uploads_id = "UU" + channel_id[2:]
+    else:
+        # Fallback (非常罕見)
+        try:
+            youtube = await asyncio.to_thread(build, "youtube", "v3", credentials=creds)
+            uploads_id = await asyncio.to_thread(_get_channel_uploads_playlist_id, youtube, channel_id)
+        except Exception:
+            uploads_id = None
+            
     if not uploads_id:
         return channel_id, []
-        
+
+    url = "https://www.googleapis.com/youtube/v3/playlistItems"
+    params = {
+        "part": "snippet",
+        "playlistId": uploads_id,
+        "maxResults": str(limit),
+    }
+    headers = {"Authorization": f"Bearer {creds.token}"}
+
     try:
-        req = youtube.playlistItems().list(
-            part="snippet",
-            playlistId=uploads_id,
-            maxResults=limit
-        )
-        resp = req.execute()
-        consume_quota(1)
+        async with aiohttp.ClientSession() as session:
+            async with session.get(url, params=params, headers=headers) as resp:
+                if resp.status != 200:
+                    err_text = await resp.text()
+                    print(f"[YouTube API Error] fetch_channel_videos_api for {channel_id}: {resp.status} {err_text}")
+                    return channel_id, []
+                data = await resp.json()
+                
+        await asyncio.to_thread(consume_quota, 1)
         
-        items = resp.get("items", [])
+        items = data.get("items", [])
         videos = []
         for item in items:
             snippet = item.get("snippet", {})
@@ -656,11 +680,8 @@ def _sync_fetch_channel_videos(creds, channel_id: str, limit: int, channel_title
             
         return channel_id, videos
     except Exception as e:
-        print(f"[YouTube API Error] _sync_fetch_channel_videos for {channel_id}: {e}")
+        print(f"[YouTube API Error] fetch_channel_videos_api for {channel_id}: {e}")
         return channel_id, []
-
-async def fetch_channel_videos_api(creds, channel_id: str, limit: int, channel_title: str = ""):
-    return await asyncio.to_thread(_sync_fetch_channel_videos, creds, channel_id, limit, channel_title)
 
 
 @app.get("/subscriptions/{channel_id}/videos")
@@ -678,6 +699,9 @@ async def get_channel_videos(channel_id: str):
 _uploads_cache: dict[str, str] = {}
 
 def _get_channel_uploads_playlist_id(youtube, channel_id: str) -> str | None:
+    if channel_id.startswith("UC"):
+        return "UU" + channel_id[2:]
+        
     if channel_id in _uploads_cache:
         return _uploads_cache[channel_id]
     
@@ -801,49 +825,51 @@ def update_settings(body: SettingsUpdate):
 
 # ── 發燒影片路由 ───────────────────────────────────────────────────────────────
 @app.get("/trending-videos")
-def get_trending_videos():
-    settings = load_settings()
-    min_sec = settings.get("min_duration_minutes", 3) * 60
-    max_sec = settings.get("max_duration_minutes", 60) * 60
-    
+def get_trending_videos(page_token: str | None = None):
     creds = require_credentials()
     youtube = build("youtube", "v3", credentials=creds)
-    
+
     try:
-        resp = youtube.videos().list(
-            part="snippet,contentDetails",
-            chart="mostPopular",
-            regionCode="TW",
-            maxResults=50
-        ).execute()
+        list_kwargs = {
+            "part": "snippet,contentDetails,statistics",
+            "chart": "mostPopular",
+            "regionCode": "TW",
+            "maxResults": 50,
+        }
+        if page_token:
+            list_kwargs["pageToken"] = page_token
+        resp = youtube.videos().list(**list_kwargs).execute()
         consume_quota(1)
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
-        
+
     items = resp.get("items", [])
+    next_page_token = resp.get("nextPageToken")
     videos = []
-    
+
     for item in items:
         if item.get("snippet", {}).get("liveBroadcastContent") == "upcoming":
             continue
-            
+
         duration_iso = item.get("contentDetails", {}).get("duration", "")
         dur_sec = parse_iso_duration(duration_iso)
-        
-        if not (min_sec <= dur_sec <= max_sec):
-            continue
-            
+
         snippet = item.get("snippet", {})
         video_id = item.get("id")
         if not video_id:
             continue
-            
+
+        try:
+            view_count = int(item.get("statistics", {}).get("viewCount", 0))
+        except (ValueError, TypeError):
+            view_count = 0
+
         title = snippet.get("title", "")
         channel_id = snippet.get("channelId", "")
         channel_title = snippet.get("channelTitle", "")
         published = snippet.get("publishedAt", "")
         thumbnail = snippet.get("thumbnails", {}).get("default", {}).get("url", f"https://i.ytimg.com/vi/{video_id}/mqdefault.jpg")
-        
+
         videos.append({
             "video_id": video_id,
             "title": title,
@@ -853,9 +879,10 @@ def get_trending_videos():
             "channel_id": channel_id,
             "channel_title": channel_title,
             "duration_seconds": dur_sec,
+            "view_count": view_count,
         })
-        
-    return {"videos": videos}
+
+    return {"videos": videos, "next_page_token": next_page_token}
 
 # ── 最新影片路由 ───────────────────────────────────────────────────────────────
 @app.get("/latest-videos")
@@ -889,7 +916,7 @@ async def get_latest_videos(hours: int | None = None):
 
     # 並發擷取 API
     limit = settings.get("videos_per_channel", 5)
-    sem = asyncio.Semaphore(5)
+    sem = asyncio.Semaphore(20)
 
     async def _bound_fetch(ch):
         async with sem:
