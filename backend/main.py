@@ -1475,6 +1475,24 @@ def get_quota():
 
 
 # ── SPA static mount (LAST: matches when no API route did) ───────────────────
+class _SPAStaticFiles(StaticFiles):
+    """StaticFiles 子類別：對 index.html 加上 no-cache header。
+
+    SPA 的 index.html 永遠引用 content-hashed assets（如 LoginView-<hash>.js）。
+    若瀏覽器快取舊版 index.html，升版後會請求已不存在的 chunk 檔名 → 404。
+    對 index.html 強制 revalidate；hashed assets 仍可長期快取。
+    """
+
+    async def get_response(self, path, scope):
+        response = await super().get_response(path, scope)
+        # path == "" 是 mount root (回傳 index.html)；明確指定 index.html 也算
+        if path in ("", "index.html"):
+            response.headers["Cache-Control"] = "no-cache, no-store, must-revalidate"
+            response.headers["Pragma"] = "no-cache"
+            response.headers["Expires"] = "0"
+        return response
+
+
 _static_dir = _resource_path("static")
 if _static_dir.is_dir():
-    app.mount("/", StaticFiles(directory=str(_static_dir), html=True), name="spa")
+    app.mount("/", _SPAStaticFiles(directory=str(_static_dir), html=True), name="spa")
