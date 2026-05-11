@@ -13,6 +13,7 @@ from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
 from fastapi.staticfiles import StaticFiles
+from google.auth.exceptions import RefreshError
 from google.auth.transport.requests import Request as GoogleRequest
 from google.oauth2.credentials import Credentials
 from google_auth_oauthlib.flow import InstalledAppFlow
@@ -391,8 +392,19 @@ def load_credentials() -> Credentials | None:
     # 不帶 SCOPES 載入，避免遷移過來的舊 token 因 scope 不符被拒
     creds = Credentials.from_authorized_user_file(str(token_file))
     if creds and creds.expired and creds.refresh_token:
-        creds.refresh(GoogleRequest())
-        token_file.write_text(creds.to_json(), encoding="utf-8")
+        try:
+            creds.refresh(GoogleRequest())
+            token_file.write_text(creds.to_json(), encoding="utf-8")
+        except RefreshError as e:
+            # Refresh token 已被撤銷或過期（例如使用者在 Google 帳號中移除授權），
+            # 將失效 token 改名保留，讓前端顯示「未登入」並提示重新授權。
+            revoked = token_file.with_suffix(token_file.suffix + ".revoked")
+            try:
+                token_file.replace(revoked)
+            except OSError:
+                pass
+            print(f"[Auth] {email} refresh token 已失效（{e}），需重新登入")
+            return None
     return creds if creds and creds.valid else None
 
 
