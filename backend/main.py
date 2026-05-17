@@ -1091,9 +1091,44 @@ def _normalize_format_quality(fmt: str | None, quality: int | None) -> tuple[str
     return f, q
 
 
-def _build_ydl_opts(output_path: str, safe_title: str, hook, fmt: str, quality: int) -> dict:
+_SEQ_PREFIX_RE = None
+
+
+def _format_seq(n: int) -> str:
+    """Zero-pad to 2 digits, auto-widen past 99 (07 / 99 / 100 / 121)."""
+    width = max(2, len(str(n)))
+    return f"{n:0{width}d}"
+
+
+def _scan_next_seq(directory: pathlib.Path) -> int:
+    """Return the next sequence number for filenames matching `^(\\d+)_` in *directory*.
+
+    Scans all entries regardless of extension (mp3 / mp4 / .part) so mixed-format
+    batches share the same counter. Missing directory or no matches → 1.
+    """
+    import re
+    global _SEQ_PREFIX_RE
+    if _SEQ_PREFIX_RE is None:
+        _SEQ_PREFIX_RE = re.compile(r"^(\d+)_")
+    try:
+        entries = list(directory.iterdir())
+    except (FileNotFoundError, NotADirectoryError):
+        return 1
+    max_seq = 0
+    for entry in entries:
+        if not entry.is_file():
+            continue
+        m = _SEQ_PREFIX_RE.match(entry.name)
+        if m:
+            n = int(m.group(1))
+            if n > max_seq:
+                max_seq = n
+    return max_seq + 1
+
+
+def _build_ydl_opts(output_path: str, safe_title: str, hook, fmt: str, quality: int, seq_prefix: str = "") -> dict:
     base = {
-        "outtmpl": os.path.join(output_path, f"{safe_title}.%(ext)s"),
+        "outtmpl": os.path.join(output_path, f"{seq_prefix}{safe_title}.%(ext)s"),
         "progress_hooks": [hook],
         "quiet": True,
         "no_warnings": True,
@@ -1144,10 +1179,12 @@ def run_download(videos: list[dict], output_path: str, task_id: str, fmt: str = 
                 download_progress[task_id]["items"][vid]["status"] = "converting"
         return hook
 
-    for v in videos:
+    start_seq = _scan_next_seq(pathlib.Path(output_path))
+    for idx, v in enumerate(videos):
         vid = v["video_id"]
         safe_title = _sanitize_filename(v.get("title", ""))
-        ydl_opts = _build_ydl_opts(output_path, safe_title, make_hook(vid), fmt, quality)
+        seq_prefix = f"{_format_seq(start_seq + idx)}_"
+        ydl_opts = _build_ydl_opts(output_path, safe_title, make_hook(vid), fmt, quality, seq_prefix)
         try:
             with yt_dlp.YoutubeDL(ydl_opts) as ydl:
                 ydl.download([v["url"]])

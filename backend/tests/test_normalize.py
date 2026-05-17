@@ -77,6 +77,17 @@ def test_list_mp3s_safe_files_have_no_rename(tmp_path):
         assert f["suggested_name"] == f["filename"]
 
 
+def test_list_mp3s_sequence_prefix_is_compatible(tmp_path):
+    """Sequence-prefixed filenames (e.g. 01_song.mp3) must NOT be flagged for rename:
+    digits and underscores are in _sanitize_filename's keep set."""
+    (tmp_path / "01_song.mp3").write_bytes(b"x")
+    (tmp_path / "100_long-title.mp3").write_bytes(b"x")
+    files = main._list_mp3s(tmp_path)
+    for f in files:
+        assert f["needs_rename"] is False, f"{f['filename']} should not need rename"
+        assert f["suggested_name"] == f["filename"]
+
+
 def test_list_mp3s_unsafe_files_flagged(tmp_path):
     unsafe = "馬斯克太空 AI 夢碎？.mp3"
     (tmp_path / unsafe).write_bytes(b"x")
