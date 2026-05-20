@@ -2,12 +2,53 @@
   <div class="latest-feed">
     <div class="feed-header">
       <h2>最新影片</h2>
-      <span class="hours-badge">{{ latestHours }}h 內</span>
+      <span class="badge">{{ appliedBadge }}</span>
+    </div>
+
+    <div class="filter-bar">
+      <label class="field">
+        <span>時間範圍（小時）</span>
+        <input
+          v-model.number="hoursInput"
+          type="number"
+          min="1"
+          max="168"
+        />
+      </label>
+      <label class="field">
+        <span>最短長度（分鐘）</span>
+        <input
+          v-model.number="minDurationInput"
+          type="number"
+          min="0"
+        />
+      </label>
+      <label class="field">
+        <span>最長長度（分鐘）</span>
+        <input
+          v-model.number="maxDurationInput"
+          type="number"
+          min="1"
+        />
+      </label>
+      <button
+        class="apply-btn"
+        :disabled="!!validationError || fetching"
+        @click="applyFilters"
+      >
+        {{ fetching ? '套用中…' : '套用' }}
+      </button>
+      <label class="redownload-toggle">
+        <input type="checkbox" v-model="allowRedownload" />
+        <span>允許再次下載</span>
+      </label>
+      <p v-if="validationError" class="field-error">{{ validationError }}</p>
+      <p class="hint">此處的調整只影響目前瀏覽，不會修改設定預設值。</p>
     </div>
 
     <div v-if="loading" class="status">載入中...</div>
     <div v-else-if="error" class="status error">{{ error }}</div>
-    <div v-else-if="videos.length === 0" class="status">此時間範圍內無新影片</div>
+    <div v-else-if="videos.length === 0" class="status">此條件下無影片</div>
 
     <ul v-else class="video-grid">
       <li v-for="v in videos" :key="v.video_id" class="video-item">
@@ -15,15 +56,15 @@
           <input
             type="checkbox"
             class="video-checkbox"
-            :checked="download.isSelected(v.video_id) || download.isDownloaded(v.video_id)"
-            :disabled="download.isDownloaded(v.video_id)"
+            :checked="download.isSelected(v.video_id) || (isAlreadyDownloaded(v) && !allowRedownload)"
+            :disabled="isAlreadyDownloaded(v) && !allowRedownload"
             @change="download.toggle(v)"
           />
           <img :src="v.thumbnail" :alt="v.title" class="thumb" @click="player.open(v.video_id)" />
           <span class="duration">{{ formatDuration(v.duration_seconds ?? null) }}</span>
         </div>
         <div class="info">
-          <span class="title" :title="v.title">{{ v.title }} <span v-if="download.isDownloaded(v.video_id)" class="dl-badge">✅ 已下載</span></span>
+          <span class="title" :title="v.title">{{ v.title }} <span v-if="isAlreadyDownloaded(v)" class="dl-badge">✅ 已下載</span></span>
           <span class="channel">{{ v.channel_title }}</span>
           <div class="meta">
             <span class="date">{{ formatDate(v.published) }}</span>
@@ -35,7 +76,7 @@
 </template>
 
 <script setup lang="ts">
-import { ref, onMounted } from 'vue'
+import { ref, computed, onMounted, watch } from 'vue'
 import { apiGet } from '@/api'
 import { useDownloadStore, type VideoItem } from '@/stores/download'
 import { useQuotaStore } from '@/stores/quota'
@@ -46,20 +87,99 @@ const quota = useQuotaStore()
 const player = usePlayerStore()
 const videos = ref<VideoItem[]>([])
 const loading = ref(true)
+const fetching = ref(false)
 const error = ref('')
-const latestHours = ref(24)
 
-onMounted(async () => {
+const allowRedownload = ref(false)
+
+function isAlreadyDownloaded(v: VideoItem): boolean {
+  return download.isDownloaded(v.video_id) || v.downloaded_today === true
+}
+
+watch(allowRedownload, (now, prev) => {
+  if (prev && !now) {
+    for (const v of [...download.selected]) {
+      if (isAlreadyDownloaded(v)) {
+        download.toggle(v)
+      }
+    }
+  }
+})
+
+const hoursInput = ref(24)
+const minDurationInput = ref(3)
+const maxDurationInput = ref(60)
+
+const appliedHours = ref(24)
+const appliedMin = ref(3)
+const appliedMax = ref(60)
+
+const validationError = computed(() => {
+  const h = hoursInput.value
+  if (!Number.isInteger(h) || h < 1 || h > 168) {
+    return '時間範圍須為 1 到 168 之間的整數'
+  }
+  const mn = minDurationInput.value
+  const mx = maxDurationInput.value
+  if (!Number.isInteger(mn) || mn < 0) {
+    return '最短長度須為 ≥ 0 的整數'
+  }
+  if (!Number.isInteger(mx) || mx < 1) {
+    return '最長長度須為 ≥ 1 的整數'
+  }
+  if (mx < mn) {
+    return '最長長度不可小於最短長度'
+  }
+  return ''
+})
+
+const appliedBadge = computed(() =>
+  `${appliedHours.value}h · ${appliedMin.value}–${appliedMax.value} 分鐘`,
+)
+
+async function fetchVideos(h: number, mn: number, mx: number) {
+  if (fetching.value) return
+  fetching.value = true
+  error.value = ''
   try {
-    const settings = await apiGet<{ latest_hours?: number }>('/settings')
-    latestHours.value = settings.latest_hours ?? 24
-    const data = await apiGet<{ videos: VideoItem[] }>(`/latest-videos?hours=${latestHours.value}`)
+    const params = new URLSearchParams({
+      hours: String(h),
+      min_duration_minutes: String(mn),
+      max_duration_minutes: String(mx),
+    })
+    const data = await apiGet<{ videos: VideoItem[] }>(`/latest-videos?${params.toString()}`)
     videos.value = data.videos
+    appliedHours.value = h
+    appliedMin.value = mn
+    appliedMax.value = mx
   } catch (e: any) {
     error.value = '無法載入最新影片'
   } finally {
     loading.value = false
+    fetching.value = false
     quota.refresh()
+  }
+}
+
+async function applyFilters() {
+  if (validationError.value || fetching.value) return
+  await fetchVideos(hoursInput.value, minDurationInput.value, maxDurationInput.value)
+}
+
+onMounted(async () => {
+  try {
+    const settings = await apiGet<{
+      latest_hours?: number
+      min_duration_minutes?: number
+      max_duration_minutes?: number
+    }>('/settings')
+    hoursInput.value = settings.latest_hours ?? 24
+    minDurationInput.value = settings.min_duration_minutes ?? 3
+    maxDurationInput.value = settings.max_duration_minutes ?? 60
+    await fetchVideos(hoursInput.value, minDurationInput.value, maxDurationInput.value)
+  } catch (e: any) {
+    error.value = '無法載入最新影片'
+    loading.value = false
   }
 })
 
@@ -87,14 +207,67 @@ function formatDate(iso: string): string {
 
 <style scoped>
 .latest-feed { padding: 1rem; }
-.feed-header { display: flex; align-items: center; gap: 0.75rem; margin-bottom: 1rem; }
+.feed-header { display: flex; align-items: center; gap: 0.75rem; margin-bottom: 0.6rem; }
 .feed-header h2 { margin: 0; font-size: 1.1rem; }
-.hours-badge {
+.badge {
   background: #f0f0f0;
   border-radius: 12px;
   padding: 0.15rem 0.6rem;
   font-size: 0.78rem;
   color: #666;
+}
+
+.filter-bar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-end;
+  gap: 0.6rem 1rem;
+  background: #fafafa;
+  border: 1px solid #eee;
+  border-radius: 8px;
+  padding: 0.6rem 0.8rem;
+  margin-bottom: 1rem;
+}
+.field { display: flex; flex-direction: column; gap: 0.2rem; font-size: 0.75rem; color: #555; }
+.field span { font-weight: 500; }
+.field input {
+  width: 6.5rem;
+  padding: 0.3rem 0.4rem;
+  border: 1px solid #ccc;
+  border-radius: 4px;
+  font-size: 0.85rem;
+}
+.apply-btn {
+  padding: 0.4rem 1rem;
+  background: #ff0000;
+  color: white;
+  border: none;
+  border-radius: 4px;
+  cursor: pointer;
+  font-size: 0.85rem;
+}
+.apply-btn:disabled { opacity: 0.5; cursor: not-allowed; }
+.redownload-toggle {
+  display: flex;
+  align-items: center;
+  gap: 0.35rem;
+  font-size: 0.78rem;
+  color: #555;
+  cursor: pointer;
+  user-select: none;
+}
+.redownload-toggle input { cursor: pointer; }
+.field-error {
+  color: #c00;
+  font-size: 0.75rem;
+  margin: 0;
+  flex-basis: 100%;
+}
+.hint {
+  color: #888;
+  font-size: 0.72rem;
+  margin: 0;
+  flex-basis: 100%;
 }
 
 .status { padding: 2rem; color: #888; text-align: center; }
@@ -119,14 +292,14 @@ ul { list-style: none; padding: 0; margin: 0; }
 }
 .video-item:hover { background: #fdfdfd; border-color: #ddd; }
 
-.thumb-wrapper { 
-  position: relative; 
-  width: 140px; /* Reduced to ~1/2 size */
+.thumb-wrapper {
+  position: relative;
+  width: 140px;
   flex-shrink: 0;
-  aspect-ratio: 16 / 9; 
-  border-radius: 6px; 
-  overflow: hidden; 
-  background: #eee; 
+  aspect-ratio: 16 / 9;
+  border-radius: 6px;
+  overflow: hidden;
+  background: #eee;
 }
 .thumb { width: 100%; height: 100%; object-fit: cover; display: block; cursor: pointer; transition: opacity 0.15s; }
 .thumb:hover { opacity: 0.92; }

@@ -202,14 +202,38 @@ def parse_iso_duration(duration: str) -> int:
     if m: sec += int(m.group(1))
     return sec
 
-def enhance_and_filter_videos(youtube, videos: list[dict], apply_duration_filter: bool = True) -> list[dict]:
+def enhance_and_filter_videos(
+    youtube,
+    videos: list[dict],
+    apply_duration_filter: bool = True,
+    min_duration_override: int | None = None,
+    max_duration_override: int | None = None,
+) -> list[dict]:
     if not videos:
         return []
-    
+
     v_dict = {v["video_id"]: v for v in videos}
     video_ids = list(v_dict.keys())
     valid_videos = []
-    
+
+    settings = load_settings() if apply_duration_filter else None
+    if apply_duration_filter:
+        min_minutes = (
+            min_duration_override
+            if min_duration_override is not None
+            else settings.get("min_duration_minutes", 3)
+        )
+        max_minutes = (
+            max_duration_override
+            if max_duration_override is not None
+            else settings.get("max_duration_minutes", 60)
+        )
+        min_sec = min_minutes * 60
+        max_sec = max_minutes * 60
+    else:
+        min_sec = 0
+        max_sec = 0
+
     for i in range(0, len(video_ids), 50):
         batch_ids = video_ids[i:i+50]
         try:
@@ -225,11 +249,7 @@ def enhance_and_filter_videos(youtube, videos: list[dict], apply_duration_filter
                     continue
                 duration_iso = item.get("contentDetails", {}).get("duration", "")
                 dur_sec = parse_iso_duration(duration_iso)
-                
-                settings = load_settings()
-                min_sec = settings.get("min_duration_minutes", 3) * 60
-                max_sec = settings.get("max_duration_minutes", 60) * 60
-                
+
                 v_dict[vid]["duration_seconds"] = dur_sec
                 if not apply_duration_filter or (min_sec <= dur_sec <= max_sec):
                     valid_videos.append(v_dict[vid])
@@ -237,7 +257,7 @@ def enhance_and_filter_videos(youtube, videos: list[dict], apply_duration_filter
             print(f"[YouTube API Error] {e}")
             for vid in batch_ids:
                 valid_videos.append(v_dict[vid])
-                
+
     return [v for v in videos if v in valid_videos]
 
 _SETTINGS_RANGES = {
@@ -836,8 +856,32 @@ def update_settings(body: SettingsUpdate):
 
 
 # ── 發燒影片路由 ───────────────────────────────────────────────────────────────
+TRENDING_CATEGORIES = [
+    {"id": None, "label": "全部"},
+    {"id": "10", "label": "🎵 音樂"},
+    {"id": "20", "label": "🎮 遊戲"},
+    {"id": "24", "label": "🎬 娛樂"},
+    {"id": "25", "label": "📰 新聞"},
+    {"id": "17", "label": "⚽ 運動"},
+    {"id": "1", "label": "🎞 電影"},
+    {"id": "23", "label": "😄 喜劇"},
+]
+TRENDING_CATEGORY_WHITELIST = {
+    c["id"] for c in TRENDING_CATEGORIES if c["id"] is not None
+}
+
+
+@app.get("/trending-videos/categories")
+def get_trending_video_categories():
+    require_credentials()
+    return {"categories": TRENDING_CATEGORIES}
+
+
 @app.get("/trending-videos")
-def get_trending_videos(page_token: str | None = None):
+def get_trending_videos(page_token: str | None = None, category: str | None = None):
+    if category is not None and category not in TRENDING_CATEGORY_WHITELIST:
+        raise HTTPException(status_code=400, detail="不支援的熱門分類")
+
     creds = require_credentials()
     youtube = build("youtube", "v3", credentials=creds)
 
@@ -850,6 +894,8 @@ def get_trending_videos(page_token: str | None = None):
         }
         if page_token:
             list_kwargs["pageToken"] = page_token
+        if category:
+            list_kwargs["videoCategoryId"] = category
         resp = youtube.videos().list(**list_kwargs).execute()
         consume_quota(1)
     except Exception as e:
@@ -898,11 +944,19 @@ def get_trending_videos(page_token: str | None = None):
 
 # ── 最新影片路由 ───────────────────────────────────────────────────────────────
 @app.get("/latest-videos")
-async def get_latest_videos(hours: int | None = None):
+async def get_latest_videos(
+    hours: int | None = None,
+    min_duration_minutes: int | None = None,
+    max_duration_minutes: int | None = None,
+):
     from datetime import datetime, timezone, timedelta
     settings = load_settings()
     if hours is None:
         hours = settings.get("latest_hours", 24)
+    if min_duration_minutes is not None and min_duration_minutes < 0:
+        min_duration_minutes = 0
+    if max_duration_minutes is not None and max_duration_minutes < 1:
+        max_duration_minutes = 1
     creds = require_credentials()
     youtube = build("youtube", "v3", credentials=creds)
 
@@ -957,7 +1011,18 @@ async def get_latest_videos(hours: int | None = None):
 
     videos.sort(key=lambda v: v["published"], reverse=True)
     videos = videos[:100]
-    videos = enhance_and_filter_videos(youtube, videos)
+    videos = enhance_and_filter_videos(
+        youtube,
+        videos,
+        apply_duration_filter=True,
+        min_duration_override=min_duration_minutes,
+        max_duration_override=max_duration_minutes,
+    )
+
+    downloaded_stems = _today_downloaded_stems()
+    for v in videos:
+        v["downloaded_today"] = _sanitize_filename(v.get("title", "")) in downloaded_stems
+
     return {"videos": videos}
 
 
@@ -1092,6 +1157,36 @@ def _normalize_format_quality(fmt: str | None, quality: int | None) -> tuple[str
 
 
 _SEQ_PREFIX_RE = None
+
+
+def _today_download_dir() -> pathlib.Path:
+    """Return today's date subdirectory under the configured output_path (local time)."""
+    from datetime import datetime
+    settings = load_settings()
+    return pathlib.Path(settings.get("output_path", "")) / datetime.now().strftime("%Y%m%d")
+
+
+def _today_downloaded_stems() -> set[str]:
+    """Return file stems in today's download folder, stripped of `^\\d+_` sequence prefix.
+
+    Ignores `.part` (in-progress) files and any non-regular entries. Returns an empty set
+    if the folder does not exist or is unreadable.
+    """
+    import re
+    seq_re = re.compile(r"^\d+_")
+    try:
+        entries = list(_today_download_dir().iterdir())
+    except (FileNotFoundError, NotADirectoryError):
+        return set()
+    stems: set[str] = set()
+    for entry in entries:
+        if not entry.is_file():
+            continue
+        if entry.suffix == ".part":
+            continue
+        stem = entry.stem
+        stems.add(seq_re.sub("", stem, count=1))
+    return stems
 
 
 def _format_seq(n: int) -> str:

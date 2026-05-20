@@ -64,7 +64,7 @@ describe('LatestVideosFeed', () => {
     const wrapper = mount(LatestVideosFeed)
     await flushPromises()
 
-    expect(wrapper.find('.hours-badge').text()).toContain('48h')
+    expect(wrapper.find('.badge').text()).toContain('48h')
   })
 
   it('無影片時顯示提示訊息', async () => {
@@ -77,7 +77,7 @@ describe('LatestVideosFeed', () => {
     await flushPromises()
     snap('LatestVideosFeed|無影片時顯示提示訊息', wrapper.html(), CSS)
 
-    expect(wrapper.text()).toContain('此時間範圍內無新影片')
+    expect(wrapper.text()).toContain('此條件下無影片')
   })
 
   it('API 失敗顯示錯誤訊息', async () => {
@@ -117,9 +117,65 @@ describe('LatestVideosFeed', () => {
     const download = useDownloadStore()
     expect(download.selected).toHaveLength(0)
 
-    await wrapper.find('input[type="checkbox"]').trigger('change')
+    await wrapper.find('.video-checkbox').trigger('change')
     expect(download.selected).toHaveLength(1)
     expect(download.selected[0].video_id).toBe('v1')
+  })
+
+  it('downloaded_today=true 時 checkbox 預設為 disabled 並顯示「已下載」徽章', async () => {
+    const { apiGet } = await import('@/api')
+    const video = { ...makeVideo('v1', 1), downloaded_today: true }
+    vi.mocked(apiGet)
+      .mockResolvedValueOnce({ latest_hours: 24 })
+      .mockResolvedValueOnce({ videos: [video] })
+
+    const wrapper = mount(LatestVideosFeed)
+    await flushPromises()
+
+    const checkbox = wrapper.find('.video-checkbox').element as HTMLInputElement
+    expect(checkbox.disabled).toBe(true)
+    expect(wrapper.find('.dl-badge').exists()).toBe(true)
+  })
+
+  it('打開「允許再次下載」後，已下載 checkbox 變為可勾選，徽章仍顯示', async () => {
+    const { apiGet } = await import('@/api')
+    const video = { ...makeVideo('v1', 1), downloaded_today: true }
+    vi.mocked(apiGet)
+      .mockResolvedValueOnce({ latest_hours: 24 })
+      .mockResolvedValueOnce({ videos: [video] })
+
+    const wrapper = mount(LatestVideosFeed)
+    await flushPromises()
+
+    const toggle = wrapper.find('.redownload-toggle input[type="checkbox"]')
+    await toggle.setValue(true)
+
+    const checkbox = wrapper.find('.video-checkbox').element as HTMLInputElement
+    expect(checkbox.disabled).toBe(false)
+    expect(wrapper.find('.dl-badge').exists()).toBe(true)
+  })
+
+  it('關閉「允許再次下載」時，已下載的影片會從 download.selected 移除', async () => {
+    const { apiGet } = await import('@/api')
+    const video = { ...makeVideo('v1', 1), downloaded_today: true }
+    vi.mocked(apiGet)
+      .mockResolvedValueOnce({ latest_hours: 24 })
+      .mockResolvedValueOnce({ videos: [video] })
+
+    const wrapper = mount(LatestVideosFeed)
+    await flushPromises()
+
+    const toggle = wrapper.find('.redownload-toggle input[type="checkbox"]')
+    await toggle.setValue(true)
+    await wrapper.find('.video-checkbox').trigger('change')
+
+    const download = useDownloadStore()
+    expect(download.selected).toHaveLength(1)
+
+    await toggle.setValue(false)
+    expect(download.selected).toHaveLength(0)
+    const checkbox = wrapper.find('.video-checkbox').element as HTMLInputElement
+    expect(checkbox.disabled).toBe(true)
   })
 
   it('最近 1 小時內的影片顯示「X 分鐘前」', async () => {

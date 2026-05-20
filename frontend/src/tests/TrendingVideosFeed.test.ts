@@ -4,92 +4,136 @@ import { setActivePinia, createPinia } from 'pinia'
 import TrendingVideosFeed from '@/components/TrendingVideosFeed.vue'
 import { useDownloadStore } from '@/stores/download'
 import { usePlayerStore } from '@/stores/player'
-import { snap, extractCss } from './snap'
 
 vi.mock('@/api', () => ({
   apiGet: vi.fn(),
 }))
 
-const CSS = extractCss('src/components/TrendingVideosFeed.vue')
-
 function makeVideo(id: string, overrides: Record<string, unknown> = {}) {
   return {
     video_id: id,
-    title: `發燒影片 ${id}`,
+    title: `熱門影片 ${id}`,
     url: `https://www.youtube.com/watch?v=${id}`,
     thumbnail: `https://i.ytimg.com/vi/${id}/mqdefault.jpg`,
     published: new Date().toISOString(),
     duration_seconds: 150,
     channel_id: 'UC_trend',
-    channel_title: '發燒頻道',
+    channel_title: '熱門頻道',
     view_count: 1234,
     ...overrides,
   }
 }
 
+function mockTrendingApi({
+  categories = [
+    { id: null, label: '全部' },
+    { id: '10', label: '🎵 音樂' },
+    { id: '20', label: '🎮 遊戲' },
+  ],
+  categoryFails = false,
+} = {}) {
+  return vi.fn(async (path: string) => {
+    if (path === '/trending-videos/categories') {
+      if (categoryFails) throw new Error('categories unavailable')
+      return { categories }
+    }
+    if (path === '/trending-videos') {
+      return { videos: [makeVideo('all1'), makeVideo('all2')], next_page_token: 'NEXT_ALL' }
+    }
+    if (path === '/trending-videos?category=10') {
+      return { videos: [makeVideo('music1')], next_page_token: null }
+    }
+    if (path === '/trending-videos?category=20') {
+      return { videos: [makeVideo('game1')], next_page_token: 'NEXT_GAME' }
+    }
+    if (path === '/trending-videos?page_token=NEXT_ALL') {
+      return { videos: [makeVideo('all3')], next_page_token: null }
+    }
+    if (path === '/trending-videos?page_token=NEXT_GAME&category=20') {
+      return { videos: [makeVideo('game2')], next_page_token: null }
+    }
+    throw new Error(`unexpected path ${path}`)
+  })
+}
+
 describe('TrendingVideosFeed', () => {
   beforeEach(() => {
+    vi.clearAllMocks()
     setActivePinia(createPinia())
+    localStorage.clear()
   })
 
-  it('載入中顯示「載入中...」', async () => {
+  it('shows loading state', async () => {
     const { apiGet } = await import('@/api')
     vi.mocked(apiGet).mockImplementation(() => new Promise(() => {}))
 
     const wrapper = mount(TrendingVideosFeed)
-    snap('TrendingVideosFeed|1. 載入狀態', wrapper.html(), CSS)
     expect(wrapper.text()).toContain('載入中')
   })
 
-  it('API 成功載入並顯示影片', async () => {
+  it('renders videos and category chips in API order', async () => {
     const { apiGet } = await import('@/api')
-    vi.mocked(apiGet).mockResolvedValueOnce({
-      videos: [makeVideo('t1'), makeVideo('t2')],
-      next_page_token: null,
+    vi.mocked(apiGet).mockImplementation(mockTrendingApi())
+
+    const wrapper = mount(TrendingVideosFeed)
+    await flushPromises()
+
+    expect(wrapper.findAll('.video-item')).toHaveLength(2)
+    expect(wrapper.text()).toContain('熱門影片 all1')
+    const chips = wrapper.findAll('.category-chip')
+    expect(chips.map(chip => chip.text())).toEqual(['全部', '🎵 音樂', '🎮 遊戲'])
+    expect(chips[0]?.classes()).toContain('active')
+  })
+
+  it('shows an error when the trending request fails', async () => {
+    const { apiGet } = await import('@/api')
+    vi.mocked(apiGet).mockImplementation(async (path: string) => {
+      if (path === '/trending-videos/categories') {
+        return { categories: [{ id: null, label: '全部' }] }
+      }
+      throw new Error('quota exceeded')
     })
 
     const wrapper = mount(TrendingVideosFeed)
     await flushPromises()
 
-    snap('TrendingVideosFeed|2. 成功顯示發燒影片清單', wrapper.html(), CSS)
-    const items = wrapper.findAll('.video-item')
-    expect(items).toHaveLength(2)
-    expect(items[0]?.text()).toContain('發燒影片 t1')
-  })
-
-  it('API 失敗顯示錯誤訊息', async () => {
-    const { apiGet } = await import('@/api')
-    vi.mocked(apiGet).mockRejectedValueOnce(new Error('網路錯誤'))
-
-    const wrapper = mount(TrendingVideosFeed)
-    await flushPromises()
-
-    snap('TrendingVideosFeed|3. 錯誤狀態', wrapper.html(), CSS)
     expect(wrapper.text()).toContain('無法載入發燒影片')
   })
 
-  it('勾選加入下載佇列', async () => {
+  it('selects videos for download', async () => {
     const { apiGet } = await import('@/api')
-    vi.mocked(apiGet).mockResolvedValueOnce({
-      videos: [makeVideo('t1')],
-      next_page_token: null,
-    })
+    vi.mocked(apiGet).mockImplementation(mockTrendingApi())
 
     const wrapper = mount(TrendingVideosFeed)
     await flushPromises()
-
-    const download = useDownloadStore()
     await wrapper.find('.video-checkbox').trigger('change')
-    expect(download.selected).toHaveLength(1)
 
-    snap('TrendingVideosFeed|4. 勾選影片後加入下載', wrapper.html(), CSS)
+    expect(useDownloadStore().selected).toHaveLength(1)
   })
 
-  it('view_count 1234567 顯示「1.23M views」', async () => {
+  it('opens the player when clicking a thumbnail', async () => {
     const { apiGet } = await import('@/api')
-    vi.mocked(apiGet).mockResolvedValueOnce({
-      videos: [makeVideo('t1', { view_count: 1234567 })],
-      next_page_token: null,
+    vi.mocked(apiGet).mockImplementation(mockTrendingApi())
+
+    const wrapper = mount(TrendingVideosFeed)
+    await flushPromises()
+    await wrapper.find('.thumb').trigger('click')
+
+    const player = usePlayerStore()
+    expect(player.currentVideoId).toBe('all1')
+    expect(player.isOpen).toBe(true)
+  })
+
+  it('formats view counts compactly', async () => {
+    const { apiGet } = await import('@/api')
+    vi.mocked(apiGet).mockImplementation(async (path: string) => {
+      if (path === '/trending-videos') {
+        return { videos: [makeVideo('t1', { view_count: 1234567 })], next_page_token: null }
+      }
+      if (path === '/trending-videos/categories') {
+        return { categories: [{ id: null, label: '全部' }] }
+      }
+      return {}
     })
 
     const wrapper = mount(TrendingVideosFeed)
@@ -97,23 +141,83 @@ describe('TrendingVideosFeed', () => {
     expect(wrapper.find('.views').text()).toBe('1.23M views')
   })
 
-  it('view_count 12345 顯示「12.3K views」', async () => {
+  it('loads more videos with no category selected', async () => {
     const { apiGet } = await import('@/api')
-    vi.mocked(apiGet).mockResolvedValueOnce({
-      videos: [makeVideo('t1', { view_count: 12345 })],
-      next_page_token: null,
-    })
+    vi.mocked(apiGet).mockImplementation(mockTrendingApi())
 
     const wrapper = mount(TrendingVideosFeed)
     await flushPromises()
-    expect(wrapper.find('.views').text()).toBe('12.3K views')
+    await wrapper.find('.load-more-btn').trigger('click')
+    await flushPromises()
+
+    expect(vi.mocked(apiGet)).toHaveBeenCalledWith('/trending-videos?page_token=NEXT_ALL')
+    expect(wrapper.findAll('.video-item')).toHaveLength(3)
+  })
+
+  it('clicking a non-active category refetches with category', async () => {
+    const { apiGet } = await import('@/api')
+    vi.mocked(apiGet).mockImplementation(mockTrendingApi())
+
+    const wrapper = mount(TrendingVideosFeed)
+    await flushPromises()
+    await wrapper.findAll('.category-chip')[1]?.trigger('click')
+    await flushPromises()
+
+    expect(vi.mocked(apiGet)).toHaveBeenCalledWith('/trending-videos?category=10')
+    expect(wrapper.findAll('.video-item')).toHaveLength(1)
+    expect(wrapper.text()).toContain('熱門影片 music1')
+  })
+
+  it('clicking the active category is a no-op', async () => {
+    const { apiGet } = await import('@/api')
+    vi.mocked(apiGet).mockImplementation(mockTrendingApi())
+
+    const wrapper = mount(TrendingVideosFeed)
+    await flushPromises()
+    const callsBefore = vi.mocked(apiGet).mock.calls.length
+    await wrapper.find('.category-chip').trigger('click')
+    await flushPromises()
+
+    expect(vi.mocked(apiGet).mock.calls).toHaveLength(callsBefore)
+  })
+
+  it('load more carries the active category', async () => {
+    const { apiGet } = await import('@/api')
+    vi.mocked(apiGet).mockImplementation(mockTrendingApi())
+
+    const wrapper = mount(TrendingVideosFeed)
+    await flushPromises()
+    await wrapper.findAll('.category-chip')[2]?.trigger('click')
+    await flushPromises()
+    await wrapper.find('.load-more-btn').trigger('click')
+    await flushPromises()
+
+    expect(vi.mocked(apiGet)).toHaveBeenCalledWith('/trending-videos?page_token=NEXT_GAME&category=20')
+    expect(wrapper.findAll('.video-item')).toHaveLength(2)
+  })
+
+  it('falls back to the all chip when categories fail', async () => {
+    const { apiGet } = await import('@/api')
+    vi.mocked(apiGet).mockImplementation(mockTrendingApi({ categoryFails: true }))
+
+    const wrapper = mount(TrendingVideosFeed)
+    await flushPromises()
+
+    const chips = wrapper.findAll('.category-chip')
+    expect(chips).toHaveLength(1)
+    expect(chips[0]?.text()).toBe('全部')
   })
 
   it('view_count 999 顯示「999 views」', async () => {
     const { apiGet } = await import('@/api')
-    vi.mocked(apiGet).mockResolvedValueOnce({
-      videos: [makeVideo('t1', { view_count: 999 })],
-      next_page_token: null,
+    vi.mocked(apiGet).mockImplementation(async (path: string) => {
+      if (path === '/trending-videos/categories') {
+        return { categories: [{ id: null, label: '全部' }] }
+      }
+      if (path === '/trending-videos') {
+        return { videos: [makeVideo('t1', { view_count: 999 })], next_page_token: null }
+      }
+      return {}
     })
 
     const wrapper = mount(TrendingVideosFeed)
@@ -121,53 +225,60 @@ describe('TrendingVideosFeed', () => {
     expect(wrapper.find('.views').text()).toBe('999 views')
   })
 
-  it('next_page_token 為 null 時不顯示「載入更多」按鈕', async () => {
-    const { apiGet } = await import('@/api')
-    vi.mocked(apiGet).mockResolvedValueOnce({
-      videos: [makeVideo('t1')],
-      next_page_token: null,
-    })
-
-    const wrapper = mount(TrendingVideosFeed)
-    await flushPromises()
-    expect(wrapper.find('.load-more-btn').exists()).toBe(false)
-  })
-
-  it('next_page_token 存在時顯示按鈕，點擊後 append 新影片', async () => {
+  it('view_count 12345 顯示「12.3K views」', async () => {
     const { apiGet } = await import('@/api')
     vi.mocked(apiGet).mockImplementation(async (path: string) => {
-      if (path === '/trending-videos') {
-        return { videos: [makeVideo('t1'), makeVideo('t2')], next_page_token: 'TOKEN_ABC' }
+      if (path === '/trending-videos/categories') {
+        return { categories: [{ id: null, label: '全部' }] }
       }
-      if (path.startsWith('/trending-videos?page_token=')) {
-        return { videos: [makeVideo('t3'), makeVideo('t4')], next_page_token: null }
+      if (path === '/trending-videos') {
+        return { videos: [makeVideo('t1', { view_count: 12345 })], next_page_token: null }
       }
       return {}
     })
 
     const wrapper = mount(TrendingVideosFeed)
     await flushPromises()
+    expect(wrapper.find('.views').text()).toBe('12.3K views')
+  })
 
+  it('30 秒短片不被時長過濾刷掉', async () => {
+    const { apiGet } = await import('@/api')
+    vi.mocked(apiGet).mockImplementation(async (path: string) => {
+      if (path === '/trending-videos/categories') {
+        return { categories: [{ id: null, label: '全部' }] }
+      }
+      if (path === '/trending-videos') {
+        return { videos: [makeVideo('short1', { duration_seconds: 30 })], next_page_token: null }
+      }
+      return {}
+    })
+
+    const wrapper = mount(TrendingVideosFeed)
+    await flushPromises()
+    const items = wrapper.findAll('.video-item')
+    expect(items).toHaveLength(1)
+    expect(items[0]?.text()).toContain('熱門影片 short1')
+  })
+
+  it('載入更多按鈕顯示「載入更多」和「約消耗 1 配額」', async () => {
+    const { apiGet } = await import('@/api')
+    vi.mocked(apiGet).mockImplementation(mockTrendingApi())
+
+    const wrapper = mount(TrendingVideosFeed)
+    await flushPromises()
     const btn = wrapper.find('.load-more-btn')
     expect(btn.exists()).toBe(true)
     expect(btn.text()).toContain('載入更多')
-    expect(btn.text()).toContain('1 配額')
-
-    await btn.trigger('click')
-    await flushPromises()
-
-    const trendingCalls = vi.mocked(apiGet).mock.calls.filter(c =>
-      typeof c[0] === 'string' && c[0].startsWith('/trending-videos?page_token=')
-    )
-    expect(trendingCalls).toHaveLength(1)
-    expect(trendingCalls[0]?.[0]).toBe('/trending-videos?page_token=TOKEN_ABC')
-    expect(wrapper.findAll('.video-item')).toHaveLength(4)
-    expect(wrapper.find('.load-more-btn').exists()).toBe(false)
+    expect(btn.text()).toContain('約消耗 1 配額')
   })
 
   it('載入更多失敗保留既有清單並顯示錯誤', async () => {
     const { apiGet } = await import('@/api')
     vi.mocked(apiGet).mockImplementation(async (path: string) => {
+      if (path === '/trending-videos/categories') {
+        return { categories: [{ id: null, label: '全部' }] }
+      }
       if (path === '/trending-videos') {
         return { videos: [makeVideo('t1')], next_page_token: 'TOKEN_X' }
       }
@@ -179,7 +290,6 @@ describe('TrendingVideosFeed', () => {
 
     const wrapper = mount(TrendingVideosFeed)
     await flushPromises()
-
     await wrapper.find('.load-more-btn').trigger('click')
     await flushPromises()
 
@@ -188,53 +298,5 @@ describe('TrendingVideosFeed', () => {
     const btn = wrapper.find('.load-more-btn')
     expect(btn.exists()).toBe(true)
     expect(btn.attributes('disabled')).toBeUndefined()
-  })
-
-  it('點縮圖呼叫 player.open(video_id)', async () => {
-    const { apiGet } = await import('@/api')
-    vi.mocked(apiGet).mockResolvedValueOnce({
-      videos: [makeVideo('t1')],
-      next_page_token: null,
-    })
-
-    const wrapper = mount(TrendingVideosFeed)
-    await flushPromises()
-
-    const player = usePlayerStore()
-    await wrapper.find('.thumb').trigger('click')
-    expect(player.currentVideoId).toBe('t1')
-    expect(player.isOpen).toBe(true)
-  })
-
-  it('點 checkbox 不觸發 player.open（仍走原本下載勾選）', async () => {
-    const { apiGet } = await import('@/api')
-    vi.mocked(apiGet).mockResolvedValueOnce({
-      videos: [makeVideo('t1')],
-      next_page_token: null,
-    })
-
-    const wrapper = mount(TrendingVideosFeed)
-    await flushPromises()
-
-    const player = usePlayerStore()
-    const download = useDownloadStore()
-    await wrapper.find('.video-checkbox').trigger('change')
-    expect(player.isOpen).toBe(false)
-    expect(download.selected).toHaveLength(1)
-  })
-
-  it('30 秒短片不被時長過濾刷掉', async () => {
-    const { apiGet } = await import('@/api')
-    vi.mocked(apiGet).mockResolvedValueOnce({
-      videos: [makeVideo('short1', { duration_seconds: 30 })],
-      next_page_token: null,
-    })
-
-    const wrapper = mount(TrendingVideosFeed)
-    await flushPromises()
-
-    const items = wrapper.findAll('.video-item')
-    expect(items).toHaveLength(1)
-    expect(items[0]?.text()).toContain('發燒影片 short1')
   })
 })

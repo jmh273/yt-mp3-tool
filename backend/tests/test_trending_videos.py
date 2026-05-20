@@ -224,3 +224,103 @@ async def test_trending_includes_statistics_in_part(client):
             await c.get("/trending-videos")
 
     assert "statistics" in captured_kwargs.get("part", "")
+
+
+async def test_trending_categories_require_auth(client):
+    with patch("main.require_credentials") as mock_req:
+        from fastapi import HTTPException
+        mock_req.side_effect = HTTPException(status_code=401, detail="Missing auth")
+        async with client as c:
+            r = await c.get("/trending-videos/categories")
+    assert r.status_code == 401
+
+
+async def test_trending_categories_return_ordered_whitelist_without_youtube_call(client):
+    with patch("main.require_credentials", return_value=_mock_valid_creds()), \
+         patch("main.build") as mock_build, \
+         patch("main.consume_quota") as mock_quota:
+        async with client as c:
+            r = await c.get("/trending-videos/categories")
+
+    assert r.status_code == 200
+    assert r.json()["categories"] == main.TRENDING_CATEGORIES
+    assert [c["id"] for c in r.json()["categories"]] == [None, "10", "20", "24", "25", "17", "1", "23"]
+    assert [c["label"] for c in r.json()["categories"]] == [
+        "全部", "🎵 音樂", "🎮 遊戲", "🎬 娛樂", "📰 新聞", "⚽ 運動", "🎞 電影", "😄 喜劇",
+    ]
+    mock_build.assert_not_called()
+    mock_quota.assert_not_called()
+
+
+async def test_trending_category_adds_video_category_id(client):
+    captured_kwargs: dict = {}
+    mock_yt = MagicMock()
+
+    def fake_list(**kwargs):
+        captured_kwargs.update(kwargs)
+        ret = MagicMock()
+        ret.execute.return_value = {"items": [_make_yt_item("v1")], "nextPageToken": None}
+        return ret
+
+    mock_yt.videos.return_value.list.side_effect = fake_list
+
+    with patch("main.load_credentials", return_value=_mock_valid_creds()), \
+         patch("main.build", return_value=mock_yt):
+        async with client as c:
+            r = await c.get("/trending-videos?category=10")
+
+    assert r.status_code == 200
+    assert captured_kwargs.get("videoCategoryId") == "10"
+
+
+async def test_trending_missing_category_omits_video_category_id(client):
+    captured_kwargs: dict = {}
+    mock_yt = MagicMock()
+
+    def fake_list(**kwargs):
+        captured_kwargs.update(kwargs)
+        ret = MagicMock()
+        ret.execute.return_value = {"items": [], "nextPageToken": None}
+        return ret
+
+    mock_yt.videos.return_value.list.side_effect = fake_list
+
+    with patch("main.load_credentials", return_value=_mock_valid_creds()), \
+         patch("main.build", return_value=mock_yt):
+        async with client as c:
+            await c.get("/trending-videos")
+
+    assert "videoCategoryId" not in captured_kwargs
+
+
+async def test_trending_invalid_category_returns_400_without_youtube_call(client):
+    with patch("main.require_credentials") as mock_req, \
+         patch("main.build") as mock_build:
+        async with client as c:
+            r = await c.get("/trending-videos?category=99")
+
+    assert r.status_code == 400
+    mock_req.assert_not_called()
+    mock_build.assert_not_called()
+
+
+async def test_trending_category_and_page_token_propagate(client):
+    captured_kwargs: dict = {}
+    mock_yt = MagicMock()
+
+    def fake_list(**kwargs):
+        captured_kwargs.update(kwargs)
+        ret = MagicMock()
+        ret.execute.return_value = {"items": [_make_yt_item("v1")], "nextPageToken": None}
+        return ret
+
+    mock_yt.videos.return_value.list.side_effect = fake_list
+
+    with patch("main.load_credentials", return_value=_mock_valid_creds()), \
+         patch("main.build", return_value=mock_yt):
+        async with client as c:
+            r = await c.get("/trending-videos?page_token=XYZ_TOKEN&category=20")
+
+    assert r.status_code == 200
+    assert captured_kwargs.get("pageToken") == "XYZ_TOKEN"
+    assert captured_kwargs.get("videoCategoryId") == "20"

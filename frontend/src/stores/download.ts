@@ -12,6 +12,7 @@ export interface VideoItem {
   channel_id?: string
   channel_title?: string
   view_count?: number
+  downloaded_today?: boolean
 }
 
 export interface ProgressItem {

@@ -5,6 +5,20 @@
       <p class="subtitle">依據 YouTube 官方統計的熱門內容</p>
     </div>
 
+    <div class="category-row" aria-label="發燒影片分類">
+      <button
+        v-for="category in categories"
+        :key="category.id ?? 'all'"
+        class="category-chip"
+        :class="{ active: category.id === activeCategoryId }"
+        type="button"
+        :disabled="loading || loadingMore"
+        @click="selectCategory(category.id)"
+      >
+        {{ category.label }}
+      </button>
+    </div>
+
     <div v-if="loading" class="loading">載入中...</div>
     <div v-else-if="error" class="error">{{ error }}</div>
     <div v-else-if="videos.length === 0" class="empty">目前沒有發燒影片</div>
@@ -61,16 +75,50 @@ interface TrendingResponse {
   next_page_token: string | null
 }
 
+interface TrendingCategory {
+  id: string | null
+  label: string
+}
+
+interface TrendingCategoriesResponse {
+  categories: TrendingCategory[]
+}
+
+const fallbackCategories: TrendingCategory[] = [{ id: null, label: '全部' }]
 const videos = ref<VideoItem[]>([])
 const loading = ref(true)
 const error = ref('')
 const nextPageToken = ref<string | null>(null)
 const loadingMore = ref(false)
 const loadMoreError = ref('')
+const categories = ref<TrendingCategory[]>(fallbackCategories)
+const activeCategoryId = ref<string | null>(null)
+
+function trendingUrl(pageToken?: string | null) {
+  const params = new URLSearchParams()
+  if (pageToken) params.set('page_token', pageToken)
+  if (activeCategoryId.value) params.set('category', activeCategoryId.value)
+  const query = params.toString()
+  return query ? `/trending-videos?${query}` : '/trending-videos'
+}
+
+async function fetchTrendingCategories() {
+  try {
+    const data = await apiGet<TrendingCategoriesResponse>('/trending-videos/categories')
+    categories.value = data.categories.length > 0 ? data.categories : fallbackCategories
+  } catch {
+    categories.value = fallbackCategories
+  }
+}
 
 async function loadInitial() {
+  loading.value = true
+  error.value = ''
+  loadMoreError.value = ''
+  activeCategoryId.value = null
   try {
-    const data = await apiGet<TrendingResponse>('/trending-videos')
+    await fetchTrendingCategories()
+    const data = await apiGet<TrendingResponse>(trendingUrl())
     videos.value = data.videos
     nextPageToken.value = data.next_page_token ?? null
   } catch (e: any) {
@@ -86,9 +134,7 @@ async function loadMore() {
   loadingMore.value = true
   loadMoreError.value = ''
   try {
-    const data = await apiGet<TrendingResponse>(
-      '/trending-videos?page_token=' + encodeURIComponent(nextPageToken.value)
-    )
+    const data = await apiGet<TrendingResponse>(trendingUrl(nextPageToken.value))
     const seen = new Set(videos.value.map(v => v.video_id))
     for (const v of data.videos) {
       if (!seen.has(v.video_id)) videos.value.push(v)
@@ -98,6 +144,26 @@ async function loadMore() {
     loadMoreError.value = '載入更多失敗：' + e.message
   } finally {
     loadingMore.value = false
+    quota.refresh()
+  }
+}
+
+async function selectCategory(categoryId: string | null) {
+  if (categoryId === activeCategoryId.value || loading.value || loadingMore.value) return
+  activeCategoryId.value = categoryId
+  videos.value = []
+  nextPageToken.value = null
+  loadMoreError.value = ''
+  error.value = ''
+  loading.value = true
+  try {
+    const data = await apiGet<TrendingResponse>(trendingUrl())
+    videos.value = data.videos
+    nextPageToken.value = data.next_page_token ?? null
+  } catch (e: any) {
+    error.value = '無法載入發燒影片：' + e.message
+  } finally {
+    loading.value = false
     quota.refresh()
   }
 }
@@ -143,6 +209,30 @@ function formatViewCount(n: number): string {
 .header { margin-bottom: 1rem; padding-bottom: 0.5rem; border-bottom: 1px solid #eee; }
 .header h2 { margin: 0; font-size: 1.2rem; color: #d32f2f; }
 .subtitle { margin: 0.2rem 0 0 0; font-size: 0.85rem; color: #777; }
+
+.category-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.45rem;
+  margin: 0 0 1rem 0;
+}
+.category-chip {
+  border: 1px solid #ddd;
+  background: #fff;
+  color: #444;
+  border-radius: 999px;
+  padding: 0.35rem 0.75rem;
+  font-size: 0.8rem;
+  cursor: pointer;
+  transition: background 0.15s, border-color 0.15s, color 0.15s;
+}
+.category-chip:hover:not(:disabled) { background: #f5f5f5; border-color: #bbb; }
+.category-chip.active {
+  background: #d32f2f;
+  border-color: #d32f2f;
+  color: #fff;
+}
+.category-chip:disabled { opacity: 0.65; cursor: not-allowed; }
 
 ul { list-style: none; padding: 0; margin: 0; }
 .video-grid {

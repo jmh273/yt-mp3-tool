@@ -15,7 +15,7 @@ def _mock_valid_creds():
 
 @pytest.fixture(autouse=True)
 def mock_enhance_and_filter():
-    with patch("main.enhance_and_filter_videos", side_effect=lambda yt, v: v):
+    with patch("main.enhance_and_filter_videos", side_effect=lambda yt, v, *a, **kw: v):
         yield
 
 
@@ -187,3 +187,84 @@ async def test_latest_videos_capped_at_100(client):
             r = await c.get("/latest-videos?hours=9999")
 
     assert len(r.json()["videos"]) <= 100
+
+
+# ── downloaded_today 標記（依今日下載資料夾比對） ──────────────────────────────
+async def test_latest_videos_downloaded_today_true_when_file_in_folder(client, tmp_path):
+    """今日資料夾中存在 sanitized title 對應的檔案時，downloaded_today 為 true。"""
+    channels = [{"channel_id": "UC_a", "title": "Chan A"}]
+    matched = _make_video("v_match", hours_ago=1)
+    unmatched = _make_video("v_miss", hours_ago=2)
+
+    today_dir = tmp_path / datetime.now().strftime("%Y%m%d")
+    today_dir.mkdir(parents=True)
+    sanitized = main._sanitize_filename(matched["title"])
+    (today_dir / f"03_{sanitized}.mp3").write_bytes(b"")
+
+    with patch("main.load_credentials", return_value=_mock_valid_creds()), \
+         patch("main.build", return_value=_mock_youtube_subscriptions(channels)), \
+         patch("main.fetch_channel_videos_api", return_value=("UC_a", [matched, unmatched])):
+        async with client as c:
+            await c.put("/settings", json={"output_path": str(tmp_path)})
+            r = await c.get("/latest-videos?hours=24")
+
+    videos = {v["video_id"]: v for v in r.json()["videos"]}
+    assert videos["v_match"]["downloaded_today"] is True
+    assert videos["v_miss"]["downloaded_today"] is False
+
+
+async def test_latest_videos_downloaded_today_ignores_part_files(client, tmp_path):
+    """.part 半下載檔案不應被視為已下載。"""
+    channels = [{"channel_id": "UC_a", "title": "Chan A"}]
+    pending = _make_video("v_pending", hours_ago=1)
+
+    today_dir = tmp_path / datetime.now().strftime("%Y%m%d")
+    today_dir.mkdir(parents=True)
+    sanitized = main._sanitize_filename(pending["title"])
+    (today_dir / f"01_{sanitized}.mp3.part").write_bytes(b"")
+
+    with patch("main.load_credentials", return_value=_mock_valid_creds()), \
+         patch("main.build", return_value=_mock_youtube_subscriptions(channels)), \
+         patch("main.fetch_channel_videos_api", return_value=("UC_a", [pending])):
+        async with client as c:
+            await c.put("/settings", json={"output_path": str(tmp_path)})
+            r = await c.get("/latest-videos?hours=24")
+
+    videos = r.json()["videos"]
+    assert videos[0]["downloaded_today"] is False
+
+
+async def test_latest_videos_downloaded_today_no_folder(client, tmp_path):
+    """今日資料夾不存在時，所有 downloaded_today 皆為 false 且不報錯。"""
+    channels = [{"channel_id": "UC_a", "title": "Chan A"}]
+    video = _make_video("v1", hours_ago=1)
+
+    with patch("main.load_credentials", return_value=_mock_valid_creds()), \
+         patch("main.build", return_value=_mock_youtube_subscriptions(channels)), \
+         patch("main.fetch_channel_videos_api", return_value=("UC_a", [video])):
+        async with client as c:
+            await c.put("/settings", json={"output_path": str(tmp_path)})
+            r = await c.get("/latest-videos?hours=24")
+
+    assert r.status_code == 200
+    assert r.json()["videos"][0]["downloaded_today"] is False
+
+
+async def test_latest_videos_downloaded_today_strips_seq_prefix(client, tmp_path):
+    """檔名無序號前綴時也能匹配（legacy 下載）。"""
+    channels = [{"channel_id": "UC_a", "title": "Chan A"}]
+    video = _make_video("v_legacy", hours_ago=1)
+
+    today_dir = tmp_path / datetime.now().strftime("%Y%m%d")
+    today_dir.mkdir(parents=True)
+    sanitized = main._sanitize_filename(video["title"])
+    (today_dir / f"{sanitized}.mp3").write_bytes(b"")
+
+    with patch("main.load_credentials", return_value=_mock_valid_creds()), \
+         patch("main.build", return_value=_mock_youtube_subscriptions(channels)), \
+         patch("main.fetch_channel_videos_api", return_value=("UC_a", [video])):
+        async with client as c:
+            await c.put("/settings", json={"output_path": str(tmp_path)})
+            r = await c.get("/latest-videos?hours=24")
+
+    assert r.json()["videos"][0]["downloaded_today"] is True
