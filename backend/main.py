@@ -18,7 +18,7 @@ from google.auth.transport.requests import Request as GoogleRequest
 from google.oauth2.credentials import Credentials
 from google_auth_oauthlib.flow import InstalledAppFlow
 from googleapiclient.discovery import build
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 
 # ── Bundle / dev path resolution ──────────────────────────────────────────────
@@ -1083,9 +1083,9 @@ def _sync_url_preview_yt_dlp(url: str) -> list[dict]:
     import yt_dlp
     ydl_opts = {
         "quiet": True,
-        "extract_flat": True,
+        "extract_flat": "in_playlist",
     }
-    
+
     videos = []
     with yt_dlp.YoutubeDL(ydl_opts) as ydl:
         try:
@@ -1141,6 +1141,8 @@ class DownloadRequest(BaseModel):
     videos: list[dict]  # [{video_id, title, url}]
     format: str = "mp3"   # "mp3" | "mp4"
     quality: int = 192    # mp3: kbps; mp4: p
+    seq_enabled: bool = True
+    start_seq: str | None = Field(default=None, pattern=r"^\d{1,10}$")
 
 
 _MP3_QUALITIES = (128, 192, 256, 320)
@@ -1221,6 +1223,40 @@ def _scan_next_seq(directory: pathlib.Path) -> int:
     return max_seq + 1
 
 
+def _scan_existing_seqs(directory: pathlib.Path) -> list[int]:
+    """Return ascending list of every numeric prefix found in *directory*."""
+    import re
+    global _SEQ_PREFIX_RE
+    if _SEQ_PREFIX_RE is None:
+        _SEQ_PREFIX_RE = re.compile(r"^(\d+)_")
+    try:
+        entries = list(directory.iterdir())
+    except (FileNotFoundError, NotADirectoryError):
+        return []
+    seqs: list[int] = []
+    for entry in entries:
+        if not entry.is_file():
+            continue
+        m = _SEQ_PREFIX_RE.match(entry.name)
+        if m:
+            seqs.append(int(m.group(1)))
+    seqs.sort()
+    return seqs
+
+
+def _compute_seq_prefix(start_seq: str | None, default_next: int, idx: int) -> str:
+    """Build the `nn_` prefix for the *idx*-th video in a batch.
+
+    - `start_seq=None`: continue from scanned `default_next`, width = max(2, len(str(n))).
+    - `start_seq` set: width follows the input string length, expanding when n outgrows it.
+    """
+    if start_seq is None:
+        return f"{_format_seq(default_next + idx)}_"
+    n = int(start_seq) + idx
+    width = max(len(start_seq), len(str(n)))
+    return f"{n:0{width}d}_"
+
+
 def _build_ydl_opts(output_path: str, safe_title: str, hook, fmt: str, quality: int, seq_prefix: str = "") -> dict:
     base = {
         "outtmpl": os.path.join(output_path, f"{seq_prefix}{safe_title}.%(ext)s"),
@@ -1249,7 +1285,15 @@ def _build_ydl_opts(output_path: str, safe_title: str, hook, fmt: str, quality: 
     }
 
 
-def run_download(videos: list[dict], output_path: str, task_id: str, fmt: str = "mp3", quality: int = 192):
+def run_download(
+    videos: list[dict],
+    output_path: str,
+    task_id: str,
+    fmt: str = "mp3",
+    quality: int = 192,
+    seq_enabled: bool = True,
+    start_seq: str | None = None,
+):
     download_progress[task_id] = {"status": "running", "items": {}}
 
     for v in videos:
@@ -1274,11 +1318,14 @@ def run_download(videos: list[dict], output_path: str, task_id: str, fmt: str = 
                 download_progress[task_id]["items"][vid]["status"] = "converting"
         return hook
 
-    start_seq = _scan_next_seq(pathlib.Path(output_path))
+    default_next = _scan_next_seq(pathlib.Path(output_path))
     for idx, v in enumerate(videos):
         vid = v["video_id"]
         safe_title = _sanitize_filename(v.get("title", ""))
-        seq_prefix = f"{_format_seq(start_seq + idx)}_"
+        if seq_enabled:
+            seq_prefix = _compute_seq_prefix(start_seq, default_next, idx)
+        else:
+            seq_prefix = ""
         ydl_opts = _build_ydl_opts(output_path, safe_title, make_hook(vid), fmt, quality, seq_prefix)
         try:
             with yt_dlp.YoutubeDL(ydl_opts) as ydl:
@@ -1309,9 +1356,28 @@ async def start_download(body: DownloadRequest):
     fmt, quality = _normalize_format_quality(body.format, body.quality)
 
     loop = asyncio.get_event_loop()
-    loop.run_in_executor(None, run_download, body.videos, final_output_path, task_id, fmt, quality)
+    loop.run_in_executor(
+        None,
+        run_download,
+        body.videos,
+        final_output_path,
+        task_id,
+        fmt,
+        quality,
+        body.seq_enabled,
+        body.start_seq,
+    )
 
     return {"task_id": task_id}
+
+
+@app.get("/download/next-seq")
+async def download_next_seq():
+    require_credentials()
+    today_dir = _today_download_dir()
+    existing = _scan_existing_seqs(today_dir)
+    next_n = (existing[-1] + 1) if existing else 1
+    return {"next_seq": _format_seq(next_n), "existing": existing}
 
 
 @app.get("/download/progress/{task_id}")

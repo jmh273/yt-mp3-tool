@@ -193,6 +193,67 @@ describe('downloadStore', () => {
     }))
   })
 
+  it('startDownload：未帶 opts 時 payload 不含 seq 欄位', async () => {
+    const { apiPost } = await import('@/api')
+    vi.mocked(apiPost).mockResolvedValue({ task_id: 't' })
+    const { Ctor } = makeEventSourceMock()
+    vi.stubGlobal('EventSource', Ctor)
+
+    const store = useDownloadStore()
+    store.toggle(FAKE_VIDEO)
+    await store.startDownload()
+
+    const payload = vi.mocked(apiPost).mock.calls[0][1] as Record<string, unknown>
+    expect(payload).not.toHaveProperty('seq_enabled')
+    expect(payload).not.toHaveProperty('start_seq')
+  })
+
+  it('startDownload：seqEnabled=false → payload 含 seq_enabled:false 且無 start_seq', async () => {
+    const { apiPost } = await import('@/api')
+    vi.mocked(apiPost).mockResolvedValue({ task_id: 't' })
+    const { Ctor } = makeEventSourceMock()
+    vi.stubGlobal('EventSource', Ctor)
+
+    const store = useDownloadStore()
+    store.toggle(FAKE_VIDEO)
+    await store.startDownload('mp3', 192, { seqEnabled: false, startSeq: '05' })
+
+    const payload = vi.mocked(apiPost).mock.calls[0][1] as Record<string, unknown>
+    expect(payload.seq_enabled).toBe(false)
+    expect(payload).not.toHaveProperty('start_seq')
+  })
+
+  it('startDownload：seqEnabled=true + startSeq 帶入兩個欄位', async () => {
+    const { apiPost } = await import('@/api')
+    vi.mocked(apiPost).mockResolvedValue({ task_id: 't' })
+    const { Ctor } = makeEventSourceMock()
+    vi.stubGlobal('EventSource', Ctor)
+
+    const store = useDownloadStore()
+    store.toggle(FAKE_VIDEO)
+    await store.startDownload('mp3', 192, { seqEnabled: true, startSeq: '05' })
+
+    expect(apiPost).toHaveBeenCalledWith('/download', expect.objectContaining({
+      seq_enabled: true,
+      start_seq: '05',
+    }))
+  })
+
+  it('startDownload：seqEnabled=true 但 startSeq 為空字串時不帶 start_seq', async () => {
+    const { apiPost } = await import('@/api')
+    vi.mocked(apiPost).mockResolvedValue({ task_id: 't' })
+    const { Ctor } = makeEventSourceMock()
+    vi.stubGlobal('EventSource', Ctor)
+
+    const store = useDownloadStore()
+    store.toggle(FAKE_VIDEO)
+    await store.startDownload('mp3', 192, { seqEnabled: true, startSeq: '' })
+
+    const payload = vi.mocked(apiPost).mock.calls[0][1] as Record<string, unknown>
+    expect(payload.seq_enabled).toBe(true)
+    expect(payload).not.toHaveProperty('start_seq')
+  })
+
   it('startDownload：SSE done 事件結束下載狀態', async () => {
     const { apiPost } = await import('@/api')
     vi.mocked(apiPost).mockResolvedValue({ task_id: 'task-xyz' })

@@ -1,8 +1,5 @@
-# download-filename-prefix Specification
+## MODIFIED Requirements
 
-## Purpose
-TBD - created by archiving change prefix-downloads-with-sequence-number. Update Purpose after archive.
-## Requirements
 ### Requirement: 下載檔名疊加流水號前綴
 
 系統 SHALL 預設在每個下載產出的檔案名稱前加上 `nn_` 形式的流水號前綴。前綴 MUST 出現在 `_sanitize_filename` 已清洗過的標題之前、副檔名之外，例如 `01_My Awesome Song.mp3`。
@@ -116,6 +113,8 @@ TBD - created by archiving change prefix-downloads-with-sequence-number. Update 
 - **WHEN** 透過 `run_normalize_batch()` 對該資料夾執行正規化
 - **THEN** 流程 MUST 成功完成，與既有處理無前綴檔名邏輯相同
 
+## ADDED Requirements
+
 ### Requirement: 流水號預覽端點
 
 系統 SHALL 提供 `GET /download/next-seq` 端點，回傳當下日期資料夾（`<output_root>/YYYYMMDD/`）的 `next_seq`（字串、依預設 2 位數零填充規則）與 `existing`（已存在的數字陣列），供前端 UI 預填輸入框與做即時衝突警告。
@@ -180,4 +179,3 @@ TBD - created by archiving change prefix-downloads-with-sequence-number. Update 
 #### Scenario: 空輸入時退回後端 auto-scan
 - **WHEN** 「加流水號」勾選盒為 ON 但「起始號」輸入框為空（例如尚未完成預填、或被使用者手動清空）
 - **THEN** 「下載選取影片」按鈕 SHALL 仍為可按狀態；送出時前端 MUST 僅帶 `seq_enabled: true` 不帶 `start_seq`，由後端依資料夾現況自動續編
-

@@ -48,7 +48,7 @@ describe('UrlDownloadFeed', () => {
     expect(wrapper.text()).toContain('解析中')
   })
 
-  it('單一網址解析成功並自動勾選', async () => {
+  it('單一網址解析成功但不自動勾選', async () => {
     const { apiGet } = await import('@/api')
     const v = makeVideo('u1')
     vi.mocked(apiGet).mockResolvedValueOnce({ videos: [v] })
@@ -60,11 +60,11 @@ describe('UrlDownloadFeed', () => {
 
     snap('UrlDownloadFeed|3. 單一影片解析成功', wrapper.html(), CSS)
     const download = useDownloadStore()
-    expect(download.selected).toHaveLength(1)
+    expect(download.selected).toHaveLength(0)
     expect(wrapper.text()).toContain('網址解析結果 u1')
   })
 
-  it('播放清單網址解析成功顯示全選按鈕', async () => {
+  it('播放清單網址解析成功顯示全選本頁按鈕與分頁列', async () => {
     const { apiGet } = await import('@/api')
     vi.mocked(apiGet).mockResolvedValueOnce({
       videos: [makeVideo('u1'), makeVideo('u2'), makeVideo('u3')]
@@ -76,7 +76,8 @@ describe('UrlDownloadFeed', () => {
     await flushPromises()
 
     snap('UrlDownloadFeed|4. 播放清單解析成功', wrapper.html(), CSS)
-    expect(wrapper.text()).toContain('✅ 全選')
+    expect(wrapper.text()).toContain('全選本頁')
+    expect(wrapper.find('.pager').exists()).toBe(true)
     expect(wrapper.findAll('.video-item')).toHaveLength(3)
   })
 

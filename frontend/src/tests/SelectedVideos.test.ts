@@ -8,6 +8,7 @@ import { snap, extractCss } from './snap'
 vi.mock('@/api', () => ({
   API_BASE: '/api',
   apiPost: vi.fn(),
+  apiGet: vi.fn().mockResolvedValue({ next_seq: '01', existing: [] }),
 }))
 
 const CSS = extractCss('src/components/SelectedVideos.vue')
@@ -80,7 +81,15 @@ describe('SelectedVideos', () => {
     await wrapper.find('.dl').trigger('click')
     await flushPromises()
 
-    expect(apiPost).toHaveBeenCalledWith('/download', { videos: [FAKE_VIDEO], format: 'mp3', quality: 192 })
+    expect(apiPost).toHaveBeenCalledWith(
+      '/download',
+      expect.objectContaining({
+        videos: [FAKE_VIDEO],
+        format: 'mp3',
+        quality: 192,
+        seq_enabled: true,
+      }),
+    )
   })
 
   it('下載中按鈕文字變為「下載中...」且 disabled', async () => {
@@ -237,6 +246,10 @@ describe('SelectedVideos', () => {
     await wrapper.find('.dl').trigger('click')
     await flushPromises()
 
-    expect(spy).toHaveBeenCalledWith('mp4', 480)
+    expect(spy).toHaveBeenCalledWith(
+      'mp4',
+      480,
+      expect.objectContaining({ seqEnabled: true }),
+    )
   })
 })

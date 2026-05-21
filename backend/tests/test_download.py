@@ -245,3 +245,243 @@ def test_run_download_batch_continues_from_existing(tmp_path):
         main.run_download(videos, str(tmp_path), task_id)
 
     assert captured_outtmpls[0].endswith("100_Next.%(ext)s")
+
+
+# ── _scan_existing_seqs ───────────────────────────────────────────────────────
+def test_scan_existing_seqs_empty(tmp_path):
+    assert main._scan_existing_seqs(tmp_path) == []
+    assert main._scan_existing_seqs(tmp_path / "missing") == []
+
+
+def test_scan_existing_seqs_sorted(tmp_path):
+    (tmp_path / "05_c.mp3").write_bytes(b"x")
+    (tmp_path / "01_a.mp3").write_bytes(b"x")
+    (tmp_path / "120_old.mp4").write_bytes(b"x")
+    (tmp_path / "abc_unprefixed.mp3").write_bytes(b"x")
+    assert main._scan_existing_seqs(tmp_path) == [1, 5, 120]
+
+
+# ── _compute_seq_prefix ───────────────────────────────────────────────────────
+def test_compute_seq_prefix_none_uses_default():
+    assert main._compute_seq_prefix(None, 1, 0) == "01_"
+    assert main._compute_seq_prefix(None, 99, 0) == "99_"
+    assert main._compute_seq_prefix(None, 99, 1) == "100_"
+
+
+def test_compute_seq_prefix_follows_string_width():
+    assert main._compute_seq_prefix("01", 1, 0) == "01_"
+    assert main._compute_seq_prefix("01", 1, 2) == "03_"
+    assert main._compute_seq_prefix("001", 99, 0) == "001_"
+    assert main._compute_seq_prefix("001", 99, 4) == "005_"
+
+
+def test_compute_seq_prefix_expands_past_width():
+    assert main._compute_seq_prefix("999", 1, 0) == "999_"
+    assert main._compute_seq_prefix("999", 1, 1) == "1000_"
+    assert main._compute_seq_prefix("999", 1, 2) == "1001_"
+
+
+# ── run_download with seq_enabled / start_seq ─────────────────────────────────
+def _capture_outtmpls(videos, tmp_path, **kwargs):
+    captured: list[str] = []
+
+    def fake_ydl_init(opts):
+        captured.append(opts["outtmpl"])
+        return MagicMock(__enter__=MagicMock(return_value=MagicMock(download=MagicMock())),
+                         __exit__=MagicMock(return_value=False))
+
+    with patch("yt_dlp.YoutubeDL", side_effect=fake_ydl_init):
+        main.run_download(videos, str(tmp_path), "task-x", **kwargs)
+    return captured
+
+
+def test_run_download_seq_disabled_omits_prefix(tmp_path):
+    """seq_enabled=False → outtmpl contains bare title."""
+    videos = [{"video_id": "v1", "title": "Hello", "url": "u"}]
+    outtmpls = _capture_outtmpls(videos, tmp_path, seq_enabled=False)
+    assert outtmpls[0].endswith("Hello.%(ext)s")
+    assert "01_Hello" not in outtmpls[0]
+
+
+def test_run_download_start_seq_two_digit(tmp_path):
+    videos = [
+        {"video_id": "v1", "title": "A", "url": "u"},
+        {"video_id": "v2", "title": "B", "url": "u"},
+        {"video_id": "v3", "title": "C", "url": "u"},
+    ]
+    outtmpls = _capture_outtmpls(videos, tmp_path, start_seq="01")
+    assert outtmpls[0].endswith("01_A.%(ext)s")
+    assert outtmpls[1].endswith("02_B.%(ext)s")
+    assert outtmpls[2].endswith("03_C.%(ext)s")
+
+
+def test_run_download_start_seq_three_digit(tmp_path):
+    videos = [
+        {"video_id": "v1", "title": "A", "url": "u"},
+        {"video_id": "v2", "title": "B", "url": "u"},
+    ]
+    outtmpls = _capture_outtmpls(videos, tmp_path, start_seq="050")
+    assert outtmpls[0].endswith("050_A.%(ext)s")
+    assert outtmpls[1].endswith("051_B.%(ext)s")
+
+
+def test_run_download_start_seq_expands_past_999(tmp_path):
+    videos = [
+        {"video_id": "v1", "title": "A", "url": "u"},
+        {"video_id": "v2", "title": "B", "url": "u"},
+        {"video_id": "v3", "title": "C", "url": "u"},
+    ]
+    outtmpls = _capture_outtmpls(videos, tmp_path, start_seq="999")
+    assert outtmpls[0].endswith("999_A.%(ext)s")
+    assert outtmpls[1].endswith("1000_B.%(ext)s")
+    assert outtmpls[2].endswith("1001_C.%(ext)s")
+
+
+# ── POST /download with new fields ────────────────────────────────────────────
+async def test_post_download_invalid_start_seq(client):
+    """Non-numeric start_seq should be rejected by Pydantic with 422."""
+    with patch("main.run_download"):
+        async with client as c:
+            r = await c.post(
+                "/download",
+                json={"videos": SAMPLE_VIDEOS, "start_seq": "abc"},
+            )
+    assert r.status_code == 422
+
+
+async def test_post_download_too_long_start_seq(client):
+    with patch("main.run_download"):
+        async with client as c:
+            r = await c.post(
+                "/download",
+                json={"videos": SAMPLE_VIDEOS, "start_seq": "12345678901"},
+            )
+    assert r.status_code == 422
+
+
+async def test_post_download_propagates_seq_fields(client):
+    """run_download should receive seq_enabled / start_seq from the request body."""
+    with patch("main.run_download") as mock_run:
+        async with client as c:
+            r = await c.post(
+                "/download",
+                json={
+                    "videos": SAMPLE_VIDEOS,
+                    "seq_enabled": False,
+                    "start_seq": "07",
+                },
+            )
+    assert r.status_code == 200
+    # run_download is dispatched via loop.run_in_executor as a positional call
+    # of (videos, output_path, task_id, fmt, quality, seq_enabled, start_seq).
+    # Inspect the most recent invocation regardless of executor wrapper.
+    last_call = mock_run.call_args
+    args = last_call.args if last_call.args else last_call.kwargs
+    if isinstance(args, tuple):
+        assert args[5] is False
+        assert args[6] == "07"
+    else:
+        assert args["seq_enabled"] is False
+        assert args["start_seq"] == "07"
+
+
+async def test_post_download_default_seq_fields(client):
+    """Legacy callers without seq fields → seq_enabled=True, start_seq=None."""
+    with patch("main.run_download") as mock_run:
+        async with client as c:
+            r = await c.post("/download", json={"videos": SAMPLE_VIDEOS})
+    assert r.status_code == 200
+    last_call = mock_run.call_args
+    args = last_call.args if last_call.args else last_call.kwargs
+    if isinstance(args, tuple):
+        assert args[5] is True
+        assert args[6] is None
+    else:
+        assert args["seq_enabled"] is True
+        assert args["start_seq"] is None
+
+
+# ── GET /download/next-seq ────────────────────────────────────────────────────
+async def test_next_seq_empty_dir(client, tmp_path):
+    with patch("main.require_credentials"), \
+         patch("main._today_download_dir", return_value=tmp_path / "empty"):
+        async with client as c:
+            r = await c.get("/download/next-seq")
+    assert r.status_code == 200
+    assert r.json() == {"next_seq": "01", "existing": []}
+
+
+async def test_next_seq_with_existing(client, tmp_path):
+    (tmp_path / "01_a.mp3").write_bytes(b"x")
+    (tmp_path / "05_b.mp4").write_bytes(b"x")
+    with patch("main.require_credentials"), \
+         patch("main._today_download_dir", return_value=tmp_path):
+        async with client as c:
+            r = await c.get("/download/next-seq")
+    assert r.status_code == 200
+    assert r.json() == {"next_seq": "06", "existing": [1, 5]}
+
+
+async def test_next_seq_widens_past_99(client, tmp_path):
+    (tmp_path / "120_old.mp3").write_bytes(b"x")
+    with patch("main.require_credentials"), \
+         patch("main._today_download_dir", return_value=tmp_path):
+        async with client as c:
+            r = await c.get("/download/next-seq")
+    assert r.status_code == 200
+    assert r.json() == {"next_seq": "121", "existing": [120]}
+
+
+# ── _sync_url_preview_yt_dlp: watch+list URLs must expand as playlist ─────────
+def test_url_preview_uses_extract_flat_in_playlist():
+    """Regression guard: opts must use 'in_playlist', not True.
+
+    With extract_flat=True, yt-dlp returns a stub _type='url' for watch?v=X&list=Y
+    URLs, with id set to the playlist ID — causing later downloads to fail.
+    """
+    captured_opts: dict = {}
+
+    def fake_ydl_init(opts):
+        captured_opts.update(opts)
+        instance = MagicMock()
+        instance.__enter__ = MagicMock(return_value=instance)
+        instance.__exit__ = MagicMock(return_value=False)
+        instance.extract_info = MagicMock(return_value={"entries": []})
+        return instance
+
+    with patch("yt_dlp.YoutubeDL", side_effect=fake_ydl_init):
+        main._sync_url_preview_yt_dlp(
+            "https://www.youtube.com/watch?v=2oW8gnmnXrU&list=PLaSVd_PZ_Y7yDFfkc4WnWlTApcw2vumlq"
+        )
+
+    assert captured_opts.get("extract_flat") == "in_playlist"
+
+
+def test_url_preview_watch_list_returns_video_ids_not_playlist_id():
+    """watch?v=X&list=Y URL → entries' video_ids in result, playlist ID absent."""
+    playlist_id = "PLaSVd_PZ_Y7yDFfkc4WnWlTApcw2vumlq"
+    fake_playlist_info = {
+        "_type": "playlist",
+        "id": playlist_id,
+        "title": "歐麗娟 紅樓夢",
+        "entries": [
+            {"id": "2oW8gnmnXrU", "title": "EP1", "duration": 3600, "uploader": "NTU"},
+            {"id": "etM0xAeaVDM", "title": "EP2", "duration": 3600, "uploader": "NTU"},
+        ],
+    }
+
+    def fake_ydl_init(_opts):
+        instance = MagicMock()
+        instance.__enter__ = MagicMock(return_value=instance)
+        instance.__exit__ = MagicMock(return_value=False)
+        instance.extract_info = MagicMock(return_value=fake_playlist_info)
+        return instance
+
+    with patch("yt_dlp.YoutubeDL", side_effect=fake_ydl_init):
+        videos = main._sync_url_preview_yt_dlp(
+            f"https://www.youtube.com/watch?v=2oW8gnmnXrU&list={playlist_id}"
+        )
+
+    assert len(videos) == 2
+    assert [v["video_id"] for v in videos] == ["2oW8gnmnXrU", "etM0xAeaVDM"]
+    assert all(v["video_id"] != playlist_id for v in videos)

@@ -7,6 +7,7 @@ backend/test-report.html
 backend/_version.txt
 
 # Node
+node_modules/
 frontend/node_modules/
 frontend/dist/
 frontend/test-report/

@@ -69,16 +69,30 @@ export const useDownloadStore = defineStore('download', () => {
     selected.value = []
   }
 
-  async function startDownload(format: 'mp3' | 'mp4' = 'mp3', quality: number = 192) {
+  async function startDownload(
+    format: 'mp3' | 'mp4' = 'mp3',
+    quality: number = 192,
+    opts: { seqEnabled?: boolean; startSeq?: string | null } = {},
+  ) {
     if (selected.value.length === 0) return
     downloading.value = true
     progress.value = {}
 
-    const { task_id } = await apiPost<{ task_id: string }>('/download', {
+    const payload: Record<string, unknown> = {
       videos: selected.value,
       format,
       quality,
-    })
+    }
+    if (opts.seqEnabled === false) {
+      payload.seq_enabled = false
+    } else if (opts.seqEnabled === true) {
+      payload.seq_enabled = true
+      if (typeof opts.startSeq === 'string' && opts.startSeq.length > 0) {
+        payload.start_seq = opts.startSeq
+      }
+    }
+
+    const { task_id } = await apiPost<{ task_id: string }>('/download', payload)
     taskId.value = task_id
 
     const es = new EventSource(`${API_BASE}/download/progress/${task_id}`)

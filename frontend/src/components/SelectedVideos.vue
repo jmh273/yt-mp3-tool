@@ -19,9 +19,40 @@
           </select>
         </label>
       </div>
+
+      <div class="seq-row">
+        <label class="seq-checkbox-label">
+          <input
+            type="checkbox"
+            v-model="seqEnabled"
+            :disabled="download.downloading"
+          />
+          <span>加流水號</span>
+        </label>
+        <label class="field" v-if="seqEnabled">
+          <span class="field-label">起始號</span>
+          <input
+            class="start-seq-input"
+            type="text"
+            inputmode="numeric"
+            pattern="\d*"
+            maxlength="10"
+            v-model="startSeqInput"
+            :disabled="download.downloading"
+          />
+        </label>
+      </div>
+      <p class="seq-warn" v-if="seqEnabled && seqConflict.length > 0">
+        ⚠️ 與既有 {{ seqConflict.map(formatPad).join('、') }} 重複
+      </p>
+
       <div class="actions">
         <button class="clear" @click="download.clearAll" :disabled="download.downloading">清除全部</button>
-        <button class="dl" @click="onDownload" :disabled="download.downloading || download.selected.length === 0">
+        <button
+          class="dl"
+          @click="onDownload"
+          :disabled="download.downloading || download.selected.length === 0 || startSeqInvalid"
+        >
           {{ download.downloading ? '下載中...' : '下載選取影片' }}
         </button>
       </div>
@@ -51,7 +82,8 @@
 </template>
 
 <script setup lang="ts">
-import { computed, ref, watch } from 'vue'
+import { computed, onMounted, ref, watch } from 'vue'
+import { apiGet } from '@/api'
 import { useDownloadStore } from '@/stores/download'
 
 const download = useDownloadStore()
@@ -70,8 +102,69 @@ watch(format, (f) => {
   quality.value = FORMAT_DEFAULTS[f]
 })
 
+const SEQ_STORAGE_KEY = 'yt_mp3_seq_enabled'
+const seqEnabled = ref<boolean>(localStorage.getItem(SEQ_STORAGE_KEY) !== 'false')
+watch(seqEnabled, (v) => {
+  localStorage.setItem(SEQ_STORAGE_KEY, String(v))
+})
+
+const startSeqInput = ref<string>('')
+const existingSeqs = ref<number[]>([])
+
+const START_SEQ_RE = /^\d{1,10}$/
+
+const startSeqInvalid = computed(
+  () => seqEnabled.value && startSeqInput.value.length > 0 && !START_SEQ_RE.test(startSeqInput.value),
+)
+
+const seqConflict = computed<number[]>(() => {
+  if (!seqEnabled.value || !START_SEQ_RE.test(startSeqInput.value)) return []
+  const n0 = parseInt(startSeqInput.value, 10)
+  const count = download.selected.length
+  if (count <= 0) return []
+  const range = new Set<number>()
+  for (let i = 0; i < count; i++) range.add(n0 + i)
+  return existingSeqs.value.filter((n) => range.has(n))
+})
+
+function formatPad(n: number): string {
+  const width = Math.max(startSeqInput.value.length || 2, String(n).length)
+  return String(n).padStart(width, '0')
+}
+
+async function fetchNextSeq() {
+  try {
+    const data = await apiGet<{ next_seq: string; existing: number[] }>('/download/next-seq')
+    startSeqInput.value = data.next_seq
+    existingSeqs.value = data.existing ?? []
+  } catch {
+    // 401 / network error: silently leave inputs untouched
+  }
+}
+
+onMounted(() => {
+  if (download.selected.length > 0) fetchNextSeq()
+})
+
+watch(
+  () => download.selected.length,
+  (n, old) => {
+    if (n > 0 && (old ?? 0) === 0) fetchNextSeq()
+  },
+)
+
+watch(
+  () => download.downloading,
+  (v, old) => {
+    if (old === true && v === false) fetchNextSeq()
+  },
+)
+
 function onDownload() {
-  download.startDownload(format.value, quality.value)
+  download.startDownload(format.value, quality.value, {
+    seqEnabled: seqEnabled.value,
+    startSeq: seqEnabled.value ? startSeqInput.value : null,
+  })
 }
 
 const doneCount = computed(() => Object.values(download.progress).filter((i) => i.status === 'done').length)
@@ -104,6 +197,41 @@ function statusLabel(status: string) {
   cursor: pointer;
 }
 .format-select:disabled, .quality-select:disabled { opacity: 0.5; cursor: not-allowed; background: #f5f5f5; }
+
+.seq-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-end;
+  gap: 0.6rem;
+  width: 100%;
+}
+.seq-checkbox-label {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+  font-size: 0.85rem;
+  cursor: pointer;
+  padding-bottom: 0.35rem;
+}
+.seq-checkbox-label input[type='checkbox'] { cursor: pointer; }
+.start-seq-input {
+  width: 5rem;
+  padding: 0.35rem 0.4rem;
+  font-size: 0.85rem;
+  border: 1px solid #ccc;
+  border-radius: 4px;
+  background: #fff;
+  text-align: center;
+  font-variant-numeric: tabular-nums;
+}
+.start-seq-input:disabled { opacity: 0.5; cursor: not-allowed; background: #f5f5f5; }
+.seq-warn {
+  margin: 0;
+  font-size: 0.78rem;
+  color: #d97706;
+  align-self: stretch;
+}
+
 .actions { display: flex; gap: 0.5rem; width: 100%; }
 .clear { flex: 1; background: transparent; border: 1px solid #888; color: #555; padding: 0.4rem; border-radius: 4px; cursor: pointer; font-size: 0.85rem; }
 .dl { flex: 2; background: #ff0000; border: none; color: white; padding: 0.4rem; border-radius: 4px; cursor: pointer; font-size: 0.85rem; font-weight: bold; }

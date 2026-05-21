@@ -5,7 +5,7 @@ export async function tc14UrlDownload(page: Page): Promise<CaseContext> {
   const ctx = startCase(
     'TC-14',
     'URL 下載：單一影片 + 播放清單',
-    '驗證「🔗 網址下載」分頁能解析貼上的 YouTube 影片或播放清單網址，單一影片自動勾選，播放清單顯示「全選 / 全不選」。',
+    '驗證「🔗 網址下載」分頁能解析 YouTube 影片或播放清單網址，解析後不預設勾選；播放清單以分頁顯示，提供「全選本頁 / 取消本頁」與每頁數量切換、頁碼導覽。',
     5,
   )
 
@@ -34,16 +34,17 @@ export async function tc14UrlDownload(page: Page): Promise<CaseContext> {
   await step(
     page,
     ctx,
-    '等待 yt-dlp 回傳影片資訊。預期清單出現一張影片卡片，且 checkbox 預設已勾選 (單一影片自動加入下載)。',
+    '等待 yt-dlp 回傳影片資訊。預期清單出現一張影片卡片，checkbox 預設未勾選（解析後一律不自動勾選，避免誤加入下載佇列）。',
     async () => {
       await page.waitForSelector('.url-feed .video-item', { timeout: 30000 })
-      const checked = await page
+      const checkbox = page
         .locator(".url-feed .video-item input[type='checkbox']")
         .first()
-        .isChecked()
-      if (!checked) {
-        throw new Error('單一影片解析後 checkbox 應該預設勾選，但未勾')
+      const checked = await checkbox.isChecked()
+      if (checked) {
+        throw new Error('單一影片解析後 checkbox 應該預設未勾選，但卻已勾')
       }
+      await checkbox.check()
     },
     500,
   )
@@ -66,16 +67,16 @@ export async function tc14UrlDownload(page: Page): Promise<CaseContext> {
   await step(
     page,
     ctx,
-    '等待解析完成。預期看到多張影片卡片 + 上方「✅ 全選」「🟩 全不選」按鈕，或 .status.error 錯誤訊息（playlist 可能已下架）。其中之一必須出現。',
+    '等待解析完成。預期看到多張影片卡片 + 上方「✅ 全選本頁」「🟩 取消本頁」按鈕與分頁列（第 1 / N 頁），或 .status.error 錯誤訊息（playlist 可能已下架）。其中之一必須出現。',
     async () => {
-      // Either successful playlist (select-all visible) OR error status
       await page.waitForFunction(
         () => {
           const selectAll = Array.from(
             document.querySelectorAll('.url-feed button'),
-          ).some((b) => b.textContent?.includes('全選'))
+          ).some((b) => b.textContent?.includes('全選本頁'))
+          const pager = !!document.querySelector('.url-feed .pager')
           const errStatus = !!document.querySelector('.url-feed .status.error')
-          return selectAll || errStatus
+          return (selectAll && pager) || errStatus
         },
         null,
         { timeout: 30000 },
