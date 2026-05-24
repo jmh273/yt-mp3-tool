@@ -34,6 +34,7 @@ import { tc14UrlDownload } from './cases/tc14-url-download'
 import { tc15PlayerModal } from './cases/tc15-player-modal'
 import { tc16DownloadFlow } from './cases/tc16-download-flow'
 import { tc17QuotaCounter } from './cases/tc17-quota-counter'
+import { tc18Discovery } from './cases/tc18-discovery'
 
 async function safeRun(
   name: string,
@@ -109,6 +110,7 @@ async function main(): Promise<number> {
   cases.push(await safeRun('TC-15', page, () => tc15PlayerModal(page)))
   cases.push(await safeRun('TC-16', page, () => tc16DownloadFlow(page)))
   cases.push(await safeRun('TC-17', page, () => tc17QuotaCounter(page)))
+  cases.push(await safeRun('TC-18', page, () => tc18Discovery(page)))
 
   await browser.close()
 

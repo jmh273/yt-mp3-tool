@@ -73,6 +73,7 @@ TOKEN_FILE = CONFIG_DIR / "token.json"           # 舊版（遷移後刪除）
 TOKENS_DIR = CONFIG_DIR / "tokens"                # 多帳號 token 目錄
 CURRENT_ACCOUNT_FILE = CONFIG_DIR / "current_account.txt"
 SETTINGS_FILE = CONFIG_DIR / "settings.json"
+DISCOVERY_PROFILES_DIR = CONFIG_DIR / "discovery_profiles"  # 同類新頻道 profile 永續快取
 
 SCOPES = [
     "https://www.googleapis.com/auth/youtube",
@@ -99,6 +100,7 @@ MP3GAIN_REFERENCE_DB = 89.0  # mp3gain default target = ReplayGain reference
 
 CONFIG_DIR.mkdir(exist_ok=True)
 TOKENS_DIR.mkdir(exist_ok=True)
+DISCOVERY_PROFILES_DIR.mkdir(exist_ok=True)
 
 
 def _read_version() -> str:
@@ -941,6 +943,739 @@ def get_trending_videos(page_token: str | None = None, category: str | None = No
         })
 
     return {"videos": videos, "next_page_token": next_page_token}
+
+
+# ── 同類新頻道發現 ─────────────────────────────────────────────────────────────
+# YouTube Data API v3 配額成本
+_QUOTA_SUBSCRIPTIONS_LIST = 1
+_QUOTA_CHANNELS_LIST = 1
+_QUOTA_VIDEOS_LIST = 1
+_QUOTA_PLAYLIST_ITEMS_LIST = 1
+_QUOTA_SEARCH_LIST = 100
+_QUOTA_SUBSCRIPTIONS_INSERT = 50
+
+# Discovery 行為常數
+_DISCOVERY_PAGE_SIZE = 20
+_DISCOVERY_KEYWORD_TOP_N = 8
+_DISCOVERY_CATEGORY_TOP_N = 6
+_DISCOVERY_MAX_PER_CHANNEL = 2
+_DISCOVERY_UPLOADS_PER_CANDIDATE = 5
+_DISCOVERY_REGION_CODE = "TW"
+
+# in-memory cache（key = email；生命週期 = backend process）
+discovery_cache: dict[str, dict] = {}
+
+# 中英文 stopwords（精簡列表，足以濾掉 channel title/keywords 的雜訊）
+_DISCOVERY_STOPWORDS = {
+    # English
+    "the", "a", "an", "and", "or", "of", "to", "in", "on", "at", "for",
+    "with", "by", "is", "are", "was", "were", "be", "been", "being",
+    "channel", "official", "tv", "youtube", "videos", "video", "music",
+    # Chinese (common particles + generic terms)
+    "的", "了", "是", "在", "我", "有", "和", "就", "不", "人", "都",
+    "一", "你", "說", "要", "去", "會", "頻道", "官方", "影片",
+}
+
+
+def _extract_channel_keywords(channel_resource: dict) -> list[str]:
+    """從 channel resource 萃取 keyword list (lowercased, deduped, stopwords 已濾)。
+
+    來源：snippet.title + brandingSettings.channel.keywords。
+    Tokenize: ASCII alnum 詞或 CJK 連續字串。
+    """
+    import re
+    snippet = channel_resource.get("snippet", {}) or {}
+    branding = (channel_resource.get("brandingSettings", {}) or {}).get("channel", {}) or {}
+    raw_text = " ".join([snippet.get("title", "") or "", branding.get("keywords", "") or ""])
+    tokens = re.findall(r"[A-Za-z0-9]+|[一-鿿㐀-䶿]+", raw_text)
+    out: list[str] = []
+    seen: set[str] = set()
+    for tok in tokens:
+        t = tok.lower()
+        if t in _DISCOVERY_STOPWORDS:
+            continue
+        if len(t) < 2:
+            continue
+        if t in seen:
+            continue
+        seen.add(t)
+        out.append(t)
+    return out
+
+
+def _downloaded_stems_all() -> set[str]:
+    """掃描整個 output_path 下所有日期子資料夾的 mp3 stems（去掉序號前綴）。
+
+    用於 discovery 過濾「已下載」影片。比 `_today_downloaded_stems` 視野更廣。
+    """
+    import re
+    seq_re = re.compile(r"^\d+_")
+    settings = load_settings()
+    root = pathlib.Path(settings.get("output_path", ""))
+    if not root.exists():
+        return set()
+    stems: set[str] = set()
+    try:
+        for entry in root.rglob("*"):
+            if not entry.is_file():
+                continue
+            if entry.suffix == ".part":
+                continue
+            stems.add(seq_re.sub("", entry.stem, count=1))
+    except OSError:
+        return set()
+    return stems
+
+
+def _build_user_profile(creds: Credentials, email: str) -> dict:
+    """建立使用者 profile 並寫入 discovery_cache[email]。
+
+    回傳 profile dict: {
+        subscribed_channel_ids: set[str],
+        keywords: list[str],     # top N (按頻率)
+        categories: list[str],   # top N (按頻率)
+    }
+    """
+    from collections import Counter
+    from datetime import datetime, timezone
+
+    youtube = build("youtube", "v3", credentials=creds)
+
+    # 1) 訂閱頻道
+    subscribed_ids: list[str] = []
+    page_token = None
+    while True:
+        resp = youtube.subscriptions().list(
+            part="snippet",
+            mine=True,
+            maxResults=50,
+            pageToken=page_token,
+        ).execute()
+        consume_quota(_QUOTA_SUBSCRIPTIONS_LIST)
+        for item in resp.get("items", []):
+            cid = item.get("snippet", {}).get("resourceId", {}).get("channelId")
+            if cid:
+                subscribed_ids.append(cid)
+        page_token = resp.get("nextPageToken")
+        if not page_token:
+            break
+
+    profile: dict = {
+        "subscribed_channel_ids": set(subscribed_ids),
+        "keywords": [],
+        "categories": [],
+        "lang": "mixed",
+        "analyzed_at": datetime.now(timezone.utc).isoformat(),
+    }
+
+    if not subscribed_ids:
+        discovery_cache[email] = {
+            "profile": profile,
+            "fast_candidates": [],
+            "full_candidates": [],
+            "merged": [],
+            "cursor": 0,
+            "phase_done": set(),
+            "built_at": profile["analyzed_at"],
+        }
+        _save_profile_to_disk(email, profile)
+        return profile
+
+    # 2) 頻道 metadata 批次抓 → keywords + 語言偵測
+    keyword_counter: Counter = Counter()
+    sub_channel_titles: list[str] = []
+    for start in range(0, len(subscribed_ids), 50):
+        batch = subscribed_ids[start: start + 50]
+        resp = youtube.channels().list(
+            part="snippet,brandingSettings",
+            id=",".join(batch),
+            maxResults=50,
+        ).execute()
+        consume_quota(_QUOTA_CHANNELS_LIST)
+        for ch in resp.get("items", []):
+            title = (ch.get("snippet", {}) or {}).get("title", "")
+            if title:
+                sub_channel_titles.append(title)
+            for kw in _extract_channel_keywords(ch):
+                keyword_counter[kw] += 1
+
+    # 3) Category 直方圖：從每個訂閱頻道最新影片的 categoryId 統計
+    latest_video_ids: list[str] = []
+    for cid in subscribed_ids:
+        if not cid.startswith("UC"):
+            continue
+        uploads_id = "UU" + cid[2:]
+        try:
+            resp = youtube.playlistItems().list(
+                part="snippet",
+                playlistId=uploads_id,
+                maxResults=1,
+            ).execute()
+            consume_quota(_QUOTA_PLAYLIST_ITEMS_LIST)
+            items = resp.get("items", [])
+            if items:
+                vid = items[0].get("snippet", {}).get("resourceId", {}).get("videoId")
+                if vid:
+                    latest_video_ids.append(vid)
+        except Exception:
+            continue
+
+    category_counter: Counter = Counter()
+    for start in range(0, len(latest_video_ids), 50):
+        batch = latest_video_ids[start: start + 50]
+        try:
+            resp = youtube.videos().list(
+                part="snippet",
+                id=",".join(batch),
+            ).execute()
+            consume_quota(_QUOTA_VIDEOS_LIST)
+            for v in resp.get("items", []):
+                cat = v.get("snippet", {}).get("categoryId")
+                if cat:
+                    category_counter[cat] += 1
+        except Exception:
+            continue
+
+    profile["keywords"] = [kw for kw, _ in keyword_counter.most_common(_DISCOVERY_KEYWORD_TOP_N)]
+    profile["categories"] = [c for c, _ in category_counter.most_common(_DISCOVERY_CATEGORY_TOP_N)]
+    profile["lang"] = _detect_profile_lang(sub_channel_titles)
+
+    discovery_cache[email] = {
+        "profile": profile,
+        "fast_candidates": [],
+        "full_candidates": [],
+        "merged": [],
+        "cursor": 0,
+        "phase_done": set(),
+        "built_at": profile["analyzed_at"],
+    }
+    _save_profile_to_disk(email, profile)
+    return profile
+
+
+def _video_payload_from_videos_item(item: dict) -> dict | None:
+    """把 videos.list 的單一 item 轉成前端 video 物件。回傳 None 表示應跳過。"""
+    snippet = item.get("snippet", {}) or {}
+    if snippet.get("liveBroadcastContent") == "upcoming":
+        return None
+    video_id = item.get("id")
+    if not video_id:
+        return None
+    duration_iso = (item.get("contentDetails", {}) or {}).get("duration", "")
+    try:
+        view_count = int((item.get("statistics", {}) or {}).get("viewCount", 0))
+    except (ValueError, TypeError):
+        view_count = 0
+    title = snippet.get("title", "")
+    channel_id = snippet.get("channelId", "")
+    channel_title = snippet.get("channelTitle", "")
+    published = snippet.get("publishedAt", "")
+    thumbnail = (snippet.get("thumbnails", {}) or {}).get("default", {}).get(
+        "url", f"https://i.ytimg.com/vi/{video_id}/mqdefault.jpg"
+    )
+    return {
+        "video_id": video_id,
+        "title": title,
+        "published": published,
+        "thumbnail": thumbnail,
+        "url": f"https://www.youtube.com/watch?v={video_id}",
+        "channel_id": channel_id,
+        "channel_title": channel_title,
+        "duration_seconds": parse_iso_duration(duration_iso),
+        "view_count": view_count,
+    }
+
+
+def _fast_phase_candidates(creds: Credentials, profile: dict) -> list[dict]:
+    """分支 A：依 profile 的 top categories 打 mostPopular。
+
+    若 profile.categories 為空（從 latest video 推斷失敗），fallback 用既有
+    TRENDING_CATEGORY_WHITELIST 的代表性 categories。
+    """
+    youtube = build("youtube", "v3", credentials=creds)
+    target_categories = profile.get("categories") or [
+        c["id"] for c in TRENDING_CATEGORIES if c["id"] is not None
+    ][:_DISCOVERY_CATEGORY_TOP_N]
+    out: list[dict] = []
+    for cat_id in target_categories[:_DISCOVERY_CATEGORY_TOP_N]:
+        try:
+            resp = youtube.videos().list(
+                part="snippet,contentDetails,statistics",
+                chart="mostPopular",
+                regionCode=_DISCOVERY_REGION_CODE,
+                videoCategoryId=str(cat_id),
+                maxResults=20,
+            ).execute()
+            consume_quota(_QUOTA_VIDEOS_LIST)
+            for item in resp.get("items", []):
+                payload = _video_payload_from_videos_item(item)
+                if payload:
+                    payload["_source"] = "fast"
+                    out.append(payload)
+        except Exception:
+            continue
+    return out
+
+
+def _full_phase_candidates(creds: Credentials, profile: dict) -> list[dict]:
+    """分支 B：用 profile.keywords 打 search.list?type=channel，再抓候選頻道近期 uploads。
+
+    回傳已附加 `_source`、`_matched_keyword` 的影片 list。
+    """
+    youtube = build("youtube", "v3", credentials=creds)
+    keywords = profile.get("keywords") or []
+    if not keywords:
+        return []
+
+    # 找候選 channel ids（每個 keyword 一次 search.list）
+    candidate_channels: dict[str, str] = {}  # channel_id → matched keyword
+    for kw in keywords[:_DISCOVERY_KEYWORD_TOP_N]:
+        try:
+            resp = youtube.search().list(
+                part="snippet",
+                q=kw,
+                type="channel",
+                regionCode=_DISCOVERY_REGION_CODE,
+                maxResults=10,
+            ).execute()
+            consume_quota(_QUOTA_SEARCH_LIST)
+            for item in resp.get("items", []):
+                cid = (item.get("id", {}) or {}).get("channelId")
+                if cid and cid not in candidate_channels:
+                    candidate_channels[cid] = kw
+        except Exception:
+            continue
+
+    if not candidate_channels:
+        return []
+
+    # 從每個候選 channel 抓近期 uploads（uploads playlist 由 UC→UU 轉換）
+    out: list[dict] = []
+    video_ids: list[str] = []
+    video_match_map: dict[str, str] = {}
+    for cid, matched_kw in candidate_channels.items():
+        if not cid.startswith("UC"):
+            continue
+        uploads_id = "UU" + cid[2:]
+        try:
+            resp = youtube.playlistItems().list(
+                part="snippet",
+                playlistId=uploads_id,
+                maxResults=_DISCOVERY_UPLOADS_PER_CANDIDATE,
+            ).execute()
+            consume_quota(_QUOTA_PLAYLIST_ITEMS_LIST)
+            for item in resp.get("items", []):
+                vid = (item.get("snippet", {}) or {}).get("resourceId", {}).get("videoId")
+                if vid:
+                    video_ids.append(vid)
+                    video_match_map[vid] = matched_kw
+        except Exception:
+            continue
+
+    if not video_ids:
+        return []
+
+    # batch videos.list 取得 contentDetails + statistics（playlistItems 沒有）
+    for start in range(0, len(video_ids), 50):
+        batch = video_ids[start: start + 50]
+        try:
+            resp = youtube.videos().list(
+                part="snippet,contentDetails,statistics",
+                id=",".join(batch),
+            ).execute()
+            consume_quota(_QUOTA_VIDEOS_LIST)
+            for item in resp.get("items", []):
+                payload = _video_payload_from_videos_item(item)
+                if not payload:
+                    continue
+                payload["_source"] = "full"
+                payload["_matched_keyword"] = video_match_map.get(payload["video_id"], "")
+                out.append(payload)
+        except Exception:
+            continue
+
+    return out
+
+
+def _discovery_profile_path(email: str) -> pathlib.Path:
+    """回傳指定帳號的 discovery profile 永續快取檔路徑。"""
+    safe = email.replace("/", "_").replace("\\", "_")
+    return DISCOVERY_PROFILES_DIR / f"{safe}.json"
+
+
+def _save_profile_to_disk(email: str, profile: dict) -> None:
+    """將 profile 寫入磁碟（set 轉 list 以利 JSON 序列化）。"""
+    serializable = {
+        "subscribed_channel_ids": sorted(profile.get("subscribed_channel_ids", set())),
+        "keywords": list(profile.get("keywords", [])),
+        "categories": list(profile.get("categories", [])),
+        "lang": profile.get("lang", "mixed"),
+        "analyzed_at": profile.get("analyzed_at"),
+    }
+    try:
+        _discovery_profile_path(email).write_text(
+            json.dumps(serializable, ensure_ascii=False, indent=2),
+            encoding="utf-8",
+        )
+    except OSError:
+        pass  # 寫檔失敗不影響功能（下次重新分析即可）
+
+
+def _load_profile_from_disk(email: str) -> dict | None:
+    """從磁碟讀取 profile；不存在或損壞回 None。"""
+    path = _discovery_profile_path(email)
+    if not path.exists():
+        return None
+    try:
+        raw = json.loads(path.read_text(encoding="utf-8"))
+    except (json.JSONDecodeError, OSError):
+        return None
+    return {
+        "subscribed_channel_ids": set(raw.get("subscribed_channel_ids", [])),
+        "keywords": list(raw.get("keywords", [])),
+        "categories": list(raw.get("categories", [])),
+        "lang": raw.get("lang", "mixed"),
+        "analyzed_at": raw.get("analyzed_at"),
+    }
+
+
+import re as _re_lang
+_CJK_CHAR_RE = _re_lang.compile(r"[一-鿿㐀-䶿]")
+_LATIN_CHAR_RE = _re_lang.compile(r"[A-Za-z]")
+
+
+def _detect_text_lang(text: str) -> str:
+    """單一字串的語言粗判斷：'cjk' / 'latin' / 'mixed'。
+    CJK 字元權重較高（一字 ≈ 一英文 word），所以用 cjk*3 vs latin 比較。
+    """
+    if not text:
+        return "mixed"
+    cjk = len(_CJK_CHAR_RE.findall(text))
+    latin = len(_LATIN_CHAR_RE.findall(text))
+    if cjk == 0 and latin == 0:
+        return "mixed"
+    if cjk > 0 and cjk * 3 >= latin:
+        return "cjk"
+    if latin > 0 and latin >= cjk * 3:
+        return "latin"
+    return "mixed"
+
+
+def _detect_profile_lang(channel_titles: list[str]) -> str:
+    """依使用者訂閱頻道的標題集合判斷主要語言。"""
+    cjk_count = 0
+    latin_count = 0
+    for title in channel_titles:
+        lang = _detect_text_lang(title or "")
+        if lang == "cjk":
+            cjk_count += 1
+        elif lang == "latin":
+            latin_count += 1
+    if cjk_count > latin_count * 1.5:
+        return "cjk"
+    if latin_count > cjk_count * 1.5:
+        return "latin"
+    return "mixed"
+
+
+def _video_matches_lang(v: dict, target_lang: str) -> bool:
+    """檢查影片語言（title 或 channel_title）是否符合 target_lang。
+    target_lang='mixed' 表示不限制。
+    """
+    if target_lang == "mixed":
+        return True
+    title_lang = _detect_text_lang(v.get("title", "") or "")
+    channel_lang = _detect_text_lang(v.get("channel_title", "") or "")
+    # 影片任一處與 target 一致（或為 mixed）就視為匹配
+    return target_lang in (title_lang, channel_lang) or "mixed" in (title_lang, channel_lang)
+
+
+def _has_keyword_match(v: dict, keywords: set[str]) -> bool:
+    """檢查影片是否與 profile 關鍵字相關。
+    Title / channel_title 任一處子字串命中、或 full phase 的 `_matched_keyword` 已設定皆算。
+    """
+    if v.get("_matched_keyword"):
+        return True
+    title = (v.get("title", "") or "").lower()
+    channel = (v.get("channel_title", "") or "").lower()
+    for kw in keywords:
+        if kw in title or kw in channel:
+            return True
+    return False
+
+
+def _filter_candidates(videos: list[dict], profile: dict) -> list[dict]:
+    """濾掉已訂閱頻道 + 已下載影片 + 重複 video_id；當 profile.keywords 非空時，
+    額外要求影片必須與關鍵字相關；當 profile.lang 非 'mixed' 時，限制候選為同語言。"""
+    subscribed = profile.get("subscribed_channel_ids", set())
+    downloaded = _downloaded_stems_all()
+    keywords = set(profile.get("keywords") or [])
+    require_keyword_match = bool(keywords)
+    target_lang = profile.get("lang", "mixed") or "mixed"
+    seen_ids: set[str] = set()
+    out: list[dict] = []
+    for v in videos:
+        vid = v.get("video_id")
+        if not vid or vid in seen_ids:
+            continue
+        if v.get("channel_id") in subscribed:
+            continue
+        # 已下載比對：用標題 sanitize 後的 stem 比對（與下載時的命名規則一致）
+        title_stem = _sanitize_filename(v.get("title", ""))
+        if title_stem in downloaded:
+            continue
+        # 相關性過濾（修法 2：嚴格）
+        if require_keyword_match and not _has_keyword_match(v, keywords):
+            continue
+        # 語言過濾（profile.lang 非 mixed 時）
+        if not _video_matches_lang(v, target_lang):
+            continue
+        seen_ids.add(vid)
+        out.append(v)
+    return out
+
+
+def _score_and_rank(videos: list[dict], profile: dict) -> list[dict]:
+    """排序公式：recency × view_velocity × keyword_hit；每頻道最多 _DISCOVERY_MAX_PER_CHANNEL 部。"""
+    import math
+    from datetime import datetime, timezone
+
+    keywords = set(profile.get("keywords") or [])
+    now = datetime.now(timezone.utc)
+
+    def score(v: dict) -> float:
+        # recency: e^(-days/7)
+        published = v.get("published", "")
+        try:
+            pub_dt = datetime.fromisoformat(published.replace("Z", "+00:00"))
+            days = max((now - pub_dt).total_seconds() / 86400.0, 0.0)
+            hours = max((now - pub_dt).total_seconds() / 3600.0, 1.0)
+        except (ValueError, TypeError):
+            days, hours = 30.0, 24.0
+        recency = math.exp(-days / 7.0)
+        velocity = float(v.get("view_count", 0)) / hours
+        # keyword hit: title + channel_title 命中（加上 _matched_keyword bonus）
+        title_lower = (v.get("title", "") or "").lower()
+        channel_lower = (v.get("channel_title", "") or "").lower()
+        hits = sum(
+            1 for kw in keywords
+            if kw in title_lower or kw in channel_lower
+        )
+        if v.get("_matched_keyword"):
+            hits += 1
+        keyword_score = (hits / max(len(keywords), 1)) if keywords else 0.0
+        # 標準化 velocity（log 壓縮，避免單一爆紅影片壟斷）
+        velocity_norm = math.log10(velocity + 1.0) / 5.0
+        # 修法 2：keyword 權重 1.5 → 5.0，velocity 權重 0.5 → 0.3，
+        # 確保 keyword-match 候選不會被 trending 雜訊蓋過。
+        return (recency * 1.0) + (velocity_norm * 0.3) + (keyword_score * 5.0)
+
+    ranked = sorted(videos, key=score, reverse=True)
+
+    # 每頻道最多 N 部
+    from collections import Counter
+    per_channel: Counter = Counter()
+    out: list[dict] = []
+    for v in ranked:
+        cid = v.get("channel_id", "")
+        if per_channel[cid] >= _DISCOVERY_MAX_PER_CHANNEL:
+            continue
+        per_channel[cid] += 1
+        out.append(v)
+    return out
+
+
+def _merge_candidates(fast: list[dict], full: list[dict], profile: dict) -> list[dict]:
+    """合併 fast + full 結果 → 過濾 → 排序 → 去重。"""
+    return _score_and_rank(_filter_candidates(fast + full, profile), profile)
+
+
+def _strip_internal_fields(videos: list[dict]) -> list[dict]:
+    """從回傳給前端的 video dict 中移除 `_source` / `_matched_keyword` 內部欄位。"""
+    out = []
+    for v in videos:
+        clean = {k: val for k, val in v.items() if not k.startswith("_")}
+        out.append(clean)
+    return out
+
+
+def _profile_summary(profile: dict) -> dict:
+    """回傳給前端的 profile 摘要。"""
+    return {
+        "subscribed_count": len(profile.get("subscribed_channel_ids", set())),
+        "keywords": list(profile.get("keywords", [])),
+        "categories": list(profile.get("categories", [])),
+        "lang": profile.get("lang", "mixed"),
+        "analyzed_at": profile.get("analyzed_at"),
+    }
+
+
+def _ensure_profile(creds: Credentials, email: str, force_rebuild: bool = False) -> dict:
+    """確保 profile 可用：先看 in-memory cache，再讀磁碟，都沒有才打 API rebuild。
+    force_rebuild=True 時忽略所有 cache 強制重建。
+    """
+    if force_rebuild:
+        return _build_user_profile(creds, email)
+
+    # in-memory cache 命中
+    entry = discovery_cache.get(email)
+    if entry is not None and entry.get("profile"):
+        return entry["profile"]
+
+    # 磁碟 cache 命中 → 還原進 in-memory
+    disk_profile = _load_profile_from_disk(email)
+    if disk_profile is not None:
+        discovery_cache[email] = {
+            "profile": disk_profile,
+            "fast_candidates": [],
+            "full_candidates": [],
+            "merged": [],
+            "cursor": 0,
+            "phase_done": set(),
+            "built_at": disk_profile.get("analyzed_at"),
+        }
+        return disk_profile
+
+    # 完全沒有 → 打 API 建立
+    return _build_user_profile(creds, email)
+
+
+class SubscribeRequest(BaseModel):
+    channel_id: str = Field(..., min_length=1)
+
+
+@app.get("/discovery/similar-channels")
+def get_similar_channels(phase: str = "fast", cursor: int = 0, force_rebuild: bool = False):
+    """同類但未訂閱頻道的近期影片。
+
+    - `phase=fast`: 僅執行 mostPopular 分支（快，~1–2 秒）
+    - `phase=full`: 確保 search.list 分支也執行完（慢，~10–30 秒）
+    - `cursor`: 分頁游標；cache 未耗盡時不打 API
+    - `force_rebuild`: 強制重新分析訂閱（重打 subscriptions.list + channels.list + 重抓 keyword）。
+       否則優先使用記憶體 cache，再讀磁碟 cache（跨 backend 重啟保留）。
+    """
+    if phase not in ("fast", "full"):
+        raise HTTPException(status_code=400, detail="phase 必須是 fast 或 full")
+
+    creds = require_credentials()
+    email = _get_current_email() or "_anonymous"
+
+    profile = _ensure_profile(creds, email, force_rebuild=force_rebuild)
+    entry = discovery_cache[email]
+
+    # force_rebuild 時清掉 candidate cache，下面會重新撈
+    if force_rebuild:
+        entry["fast_candidates"] = []
+        entry["full_candidates"] = []
+        entry["merged"] = []
+        entry["cursor"] = 0
+        entry["phase_done"] = set()
+        cursor = 0
+
+    # 沒有訂閱頻道 → 空狀態
+    if not profile.get("subscribed_channel_ids"):
+        return {
+            "videos": [],
+            "cursor": 0,
+            "has_more": False,
+            "phase": phase,
+            "phase_done": list(entry.get("phase_done", set())),
+            "profile_summary": _profile_summary(profile),
+            "empty_reason": "no_subscriptions",
+        }
+
+    phase_done = entry.setdefault("phase_done", set())
+
+    # 若 cursor 在現有 merged 內 → 直接切片回傳，不打 API
+    merged = entry.get("merged") or []
+    page_end = cursor + _DISCOVERY_PAGE_SIZE
+    if cursor < len(merged) and (page_end <= len(merged) or phase in phase_done):
+        page = merged[cursor:page_end]
+        return {
+            "videos": _strip_internal_fields(page),
+            "cursor": min(page_end, len(merged)),
+            "has_more": page_end < len(merged),
+            "phase": phase,
+            "phase_done": list(phase_done),
+            "profile_summary": _profile_summary(profile),
+        }
+
+    # 需要打 API 補候選
+    if "fast" not in phase_done:
+        entry["fast_candidates"] = _fast_phase_candidates(creds, profile)
+        phase_done.add("fast")
+
+    if phase == "full" and "full" not in phase_done:
+        entry["full_candidates"] = _full_phase_candidates(creds, profile)
+        phase_done.add("full")
+
+    entry["merged"] = _merge_candidates(
+        entry["fast_candidates"], entry["full_candidates"], profile
+    )
+    merged = entry["merged"]
+
+    # cursor 超出 → 重新撈一批候選，但 **不重新分析 profile**（profile 是 sticky 的，
+    # 使用者要重新分析需明確點「重新分析」按鈕 → force_rebuild=true）
+    if cursor >= len(merged) and cursor > 0:
+        entry["fast_candidates"] = _fast_phase_candidates(creds, profile)
+        if phase == "full":
+            entry["full_candidates"] = _full_phase_candidates(creds, profile)
+            entry["phase_done"] = {"fast", "full"}
+        else:
+            entry["phase_done"] = {"fast"}
+        entry["merged"] = _merge_candidates(
+            entry["fast_candidates"], entry["full_candidates"], profile
+        )
+        merged = entry["merged"]
+        cursor = 0
+        page_end = _DISCOVERY_PAGE_SIZE
+
+    page = merged[cursor:page_end]
+    return {
+        "videos": _strip_internal_fields(page),
+        "cursor": min(page_end, len(merged)),
+        "has_more": page_end < len(merged),
+        "phase": phase,
+        "phase_done": list(phase_done),
+        "profile_summary": _profile_summary(profile),
+    }
+
+
+@app.post("/discovery/subscribe")
+def post_discovery_subscribe(body: SubscribeRequest):
+    """一鍵訂閱指定頻道，並更新 cache。"""
+    creds = require_credentials()
+    youtube = build("youtube", "v3", credentials=creds)
+    try:
+        youtube.subscriptions().insert(
+            part="snippet",
+            body={"snippet": {"resourceId": {"kind": "youtube#channel", "channelId": body.channel_id}}},
+        ).execute()
+        consume_quota(_QUOTA_SUBSCRIPTIONS_INSERT)
+    except Exception as e:
+        msg = str(e)
+        # google API client raises HttpError; 取 reason 給前端
+        status = 500
+        if "subscriptionDuplicate" in msg:
+            status = 409
+        elif "subscriptionForbidden" in msg or "forbidden" in msg.lower():
+            status = 403
+        elif "subscriptionNotFound" in msg or "notFound" in msg:
+            status = 404
+        raise HTTPException(status_code=status, detail=f"訂閱失敗：{msg}")
+
+    # 更新 cache：加入訂閱集合 + 過濾候選池
+    email = _get_current_email() or "_anonymous"
+    entry = discovery_cache.get(email)
+    if entry is not None:
+        profile = entry["profile"]
+        profile.setdefault("subscribed_channel_ids", set()).add(body.channel_id)
+        entry["fast_candidates"] = [v for v in entry.get("fast_candidates", []) if v.get("channel_id") != body.channel_id]
+        entry["full_candidates"] = [v for v in entry.get("full_candidates", []) if v.get("channel_id") != body.channel_id]
+        entry["merged"] = [v for v in entry.get("merged", []) if v.get("channel_id") != body.channel_id]
+
+    return {"success": True, "channel_id": body.channel_id}
+
 
 # ── 最新影片路由 ───────────────────────────────────────────────────────────────
 @app.get("/latest-videos")

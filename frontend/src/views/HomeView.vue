@@ -71,6 +71,14 @@
           🔗 網址下載
         </button>
 
+        <button
+          class="latest-btn discovery-btn"
+          :class="{ active: activeView === 'discovery' }"
+          @click="showDiscovery"
+        >
+          🔍 同類新頻道
+        </button>
+
         <button class="action-btn" @click="checkLatestDates" :disabled="checkingDates">
           {{ checkingDates ? '檢查中...' : '檢查更新日期' }}
         </button>
@@ -116,6 +124,7 @@
         <TrendingVideosFeed v-else-if="activeView === 'trending'" />
         <SearchVideosFeed v-else-if="activeView === 'search'" />
         <UrlDownloadFeed v-else-if="activeView === 'url'" />
+        <SimilarChannelDiscoveryFeed v-else-if="activeView === 'discovery'" />
       </main>
 
       <!-- 第三欄：分頁式右欄（下載 / 音量正規化） -->
@@ -161,6 +170,7 @@ import LatestVideosFeed from '@/components/LatestVideosFeed.vue'
 import TrendingVideosFeed from '@/components/TrendingVideosFeed.vue'
 import SearchVideosFeed from '@/components/SearchVideosFeed.vue'
 import UrlDownloadFeed from '@/components/UrlDownloadFeed.vue'
+import SimilarChannelDiscoveryFeed from '@/components/SimilarChannelDiscoveryFeed.vue'
 import SelectedVideos from '@/components/SelectedVideos.vue'
 import VolumeNormalizer from '@/components/VolumeNormalizer.vue'
 
@@ -182,7 +192,7 @@ const loading = ref(true)
 const error = ref('')
 const version = ref('')
 const selectedChannelId = ref<string | null>(null)
-const activeView = ref<'none' | 'channel' | 'latest' | 'trending' | 'search' | 'url'>('none')
+const activeView = ref<'none' | 'channel' | 'latest' | 'trending' | 'search' | 'url' | 'discovery'>('none')
 const activeRightTab = ref<'download' | 'normalize'>('download')
 const checkingDates = ref(false)
 const channelDates = ref<Record<string, string>>({})
@@ -233,6 +243,11 @@ function showSearch() {
 function showUrl() {
   selectedChannelId.value = null
   activeView.value = 'url'
+}
+
+function showDiscovery() {
+  selectedChannelId.value = null
+  activeView.value = 'discovery'
 }
 
 function formatChannelDate(iso: string): string {
