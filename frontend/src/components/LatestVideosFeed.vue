@@ -3,6 +3,10 @@
     <div class="feed-header">
       <h2>最新影片</h2>
       <span class="badge">{{ appliedBadge }}</span>
+      <span v-if="!loading && !error" class="count-badge" :class="{ 'count-cap': videos.length >= 100 }">
+        {{ videos.length }} 部
+        <template v-if="videos.length >= 100">（已達上限，調短時窗看完整列表）</template>
+      </span>
     </div>
 
     <div class="filter-bar">
@@ -215,6 +219,20 @@ function formatDate(iso: string): string {
   padding: 0.15rem 0.6rem;
   font-size: 0.78rem;
   color: #666;
+}
+.count-badge {
+  background: #e3f2fd;
+  color: #1565c0;
+  border: 1px solid #bbdefb;
+  border-radius: 12px;
+  padding: 0.15rem 0.6rem;
+  font-size: 0.78rem;
+  font-variant-numeric: tabular-nums;
+}
+.count-badge.count-cap {
+  background: #fff3e0;
+  color: #b25e00;
+  border-color: #ffd599;
 }
 
 .filter-bar {
