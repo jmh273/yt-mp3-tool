@@ -1,6 +1,6 @@
 {
   "name": "frontend",
-  "version": "0.9.0",
+  "version": "0.13.0",
   "private": true,
   "type": "module",
   "scripts": {
@@ -9,13 +9,15 @@
     "preview": "vite preview",
     "build-only": "vite build",
     "type-check": "vue-tsc --build",
+    "lint": "vue-tsc --noEmit",
     "test": "vitest run && node src/tests/screenshot.mjs && node src/tests/make-report.mjs",
     "test:watch": "vitest",
     "test:coverage": "vitest run --coverage",
     "test:ui": "vitest --ui",
     "test:report": "vitest run && vite preview --outDir test-report --port 3001",
     "e2e:auth": "tsx e2e/auth-setup.ts",
-    "e2e": "tsx e2e/walkthrough.ts"
+    "e2e": "tsx e2e/walkthrough.ts",
+    "verify": "tsx e2e/verify.ts"
   },
   "dependencies": {
     "pinia": "^3.0.4",

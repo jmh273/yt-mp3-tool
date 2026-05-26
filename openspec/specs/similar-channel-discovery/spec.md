@@ -115,21 +115,26 @@ Defines the「🔍 同類新頻道」discovery feature — a backend pipeline + 
 
 ### Requirement: 一鍵訂閱
 
-系統 SHALL 支援「➕訂閱」按鈕，呼叫 YouTube `subscriptions.insert` 將該頻道加入使用者訂閱。
+系統 SHALL 移除「同類新頻道」影片卡片上的「➕ 訂閱」按鈕，改提供「👁 加入觀察名單」按鈕。卡片**不再因動作而淡出**；已加入觀察名單後按鈕變更為「✓ 已在觀察名單」並 disabled（單向動作，與「✓ 已訂閱」風格一致）。訂閱動作改由觀察名單面板承擔。
 
-#### Scenario: 訂閱成功
+#### Scenario: 加入觀察名單
 
-- **WHEN** 使用者在某影片卡片點擊「➕訂閱」
-- **THEN** backend 呼叫 `subscriptions.insert` 並消耗 50 quota units
-- **AND** 將該 channelId 加入 cache 中的訂閱集合
-- **AND** 從 cache 候選池移除該頻道的所有影片
-- **AND** 前端卡片 badge 變為「已訂閱」並於 1~2 秒後淡出移除
+- **WHEN** 使用者在某影片卡片點擊「👁 加入觀察名單」
+- **THEN** 該頻道 (`channel_id`、`title`、`thumbnail`) 加入觀察名單 store，`added_at` 為當下時間
+- **AND** 卡片留在列表中，不淡出、不移除
+- **AND** 該頻道後續所有出現在同類新頻道的卡片，按鈕 MUST 顯示為「✓ 已在觀察名單」且 disabled
+- **AND** 無 YouTube API 呼叫，無配額消耗
 
-#### Scenario: 訂閱失敗（頻道關閉訂閱或 API 錯誤）
+#### Scenario: 已在觀察名單的頻道再次出現
 
-- **WHEN** YouTube API 對 `subscriptions.insert` 回傳非 2xx
-- **THEN** 前端顯示錯誤 toast「訂閱失敗：<原因>」
-- **AND** 卡片保留在列表中，不淡出
+- **WHEN** 候選池 reload 後，某已在觀察名單的頻道又出現在列表
+- **THEN** 該頻道的卡片按鈕直接渲染為「✓ 已在觀察名單」並 disabled
+
+#### Scenario: 不再有訂閱失敗 toast 從此卡片觸發
+
+- **WHEN** 使用者在「同類新頻道」卡片點任何按鈕
+- **THEN** MUST NOT 呼叫 `subscriptions.insert`
+- **AND** MUST NOT 出現「訂閱成功」「訂閱失敗」相關 toast（這些 toast 改由觀察名單面板的「➕ 訂閱」動作觸發）
 
 ### Requirement: Tab UI 整合
 
@@ -146,7 +151,7 @@ Defines the「🔍 同類新頻道」discovery feature — a backend pipeline + 
 
 - **WHEN** 此 tab 顯示影片卡片
 - **THEN** 卡片視覺結構與既有 trending / 訂閱影片卡片一致（縮圖、標題、頻道名、發布時間、時長、勾選下載按鈕）
-- **AND** 額外顯示「➕訂閱」按鈕與「★新頻道」badge
+- **AND** 額外顯示「👁 加入觀察名單」按鈕與「★新頻道」badge
 
 ### Requirement: 配額計數整合
 

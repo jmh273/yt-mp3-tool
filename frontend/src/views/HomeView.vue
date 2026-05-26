@@ -79,34 +79,58 @@
           🔍 同類新頻道
         </button>
 
-        <button class="action-btn" @click="checkLatestDates" :disabled="checkingDates">
-          {{ checkingDates ? '檢查中...' : '檢查更新日期' }}
-        </button>
-
-        <input
-          v-model="searchQuery"
-          type="search"
-          class="search-input"
-          placeholder="搜尋頻道..."
-          aria-label="搜尋頻道"
-        />
-
-        <div
-          v-for="ch in filteredChannels"
-          :key="ch.channel_id"
-          class="channel-card"
-          :class="{ selected: selectedChannelId === ch.channel_id }"
-          @click="selectChannel(ch.channel_id)"
-        >
-          <img :src="ch.thumbnail" :alt="ch.title" width="32" height="32" />
-          <div class="channel-info">
-            <span class="channel-title">{{ ch.title }}</span>
-            <span v-if="channelDates[ch.channel_id]" class="channel-date">
-              {{ formatChannelDate(channelDates[ch.channel_id]!) }}
-            </span>
-          </div>
-          <button class="delete-btn" @click.stop="deleteChannel(ch)" title="取消訂閱">🗑️</button>
+        <div class="left-tab-bar">
+          <button
+            class="left-tab"
+            :class="{ active: activeLeftTab === 'subscribed' }"
+            @click="activeLeftTab = 'subscribed'"
+          >
+            訂閱
+          </button>
+          <button
+            class="left-tab"
+            :class="{ active: activeLeftTab === 'watchlist' }"
+            @click="activeLeftTab = 'watchlist'"
+          >
+            觀察名單
+          </button>
         </div>
+
+        <div v-if="activeLeftTab === 'subscribed'" class="left-tab-content">
+          <button class="action-btn" @click="checkLatestDates" :disabled="checkingDates">
+            {{ checkingDates ? '檢查中...' : '檢查更新日期' }}
+          </button>
+
+          <input
+            v-model="searchQuery"
+            type="search"
+            class="search-input"
+            placeholder="搜尋頻道..."
+            aria-label="搜尋頻道"
+          />
+
+          <div
+            v-for="ch in filteredChannels"
+            :key="ch.channel_id"
+            class="channel-card"
+            :class="{ selected: selectedChannelId === ch.channel_id }"
+            @click="selectChannel(ch.channel_id)"
+          >
+            <img :src="ch.thumbnail" :alt="ch.title" width="32" height="32" />
+            <div class="channel-info">
+              <span class="channel-title">{{ ch.title }}</span>
+              <span v-if="channelDates[ch.channel_id]" class="channel-date">
+                {{ formatChannelDate(channelDates[ch.channel_id]!) }}
+              </span>
+            </div>
+            <button class="delete-btn" @click.stop="deleteChannel(ch)" title="取消訂閱">🗑️</button>
+          </div>
+        </div>
+        <WatchlistPanel
+          v-else
+          @select-channel="selectWatchlistChannel"
+          @subscribed="appendSubscribedChannel"
+        />
       </aside>
 
       <!-- 右欄：內容區 (原本的右欄，現在變成中間欄) -->
@@ -171,6 +195,7 @@ import TrendingVideosFeed from '@/components/TrendingVideosFeed.vue'
 import SearchVideosFeed from '@/components/SearchVideosFeed.vue'
 import UrlDownloadFeed from '@/components/UrlDownloadFeed.vue'
 import SimilarChannelDiscoveryFeed from '@/components/SimilarChannelDiscoveryFeed.vue'
+import WatchlistPanel from '@/components/WatchlistPanel.vue'
 import SelectedVideos from '@/components/SelectedVideos.vue'
 import VolumeNormalizer from '@/components/VolumeNormalizer.vue'
 
@@ -193,6 +218,7 @@ const error = ref('')
 const version = ref('')
 const selectedChannelId = ref<string | null>(null)
 const activeView = ref<'none' | 'channel' | 'latest' | 'trending' | 'search' | 'url' | 'discovery'>('none')
+const activeLeftTab = ref<'subscribed' | 'watchlist'>('subscribed')
 const activeRightTab = ref<'download' | 'normalize'>('download')
 const checkingDates = ref(false)
 const channelDates = ref<Record<string, string>>({})
@@ -223,6 +249,16 @@ function selectChannel(id: string) {
   if (selectedChannelId.value === id && activeView.value === 'channel') return
   selectedChannelId.value = id
   activeView.value = 'channel'
+}
+
+function selectWatchlistChannel(id: string) {
+  selectedChannelId.value = id
+  activeView.value = 'channel'
+}
+
+function appendSubscribedChannel(ch: Channel) {
+  if (channels.value.some((existing) => existing.channel_id === ch.channel_id)) return
+  channels.value.push(ch)
 }
 
 function showLatest() {
@@ -450,6 +486,34 @@ h1 { margin: 0; font-size: 1.2rem; }
 }
 .latest-btn.active { background: #ff0000; color: white; border-color: #cc0000; }
 .latest-btn:hover:not(.active) { background: #ebebeb; }
+
+.left-tab-bar {
+  display: flex;
+  border-bottom: 1px solid #ddd;
+  background: #fff;
+  margin: 0.2rem 0 0.4rem;
+  flex-shrink: 0;
+}
+
+.left-tab {
+  flex: 1;
+  padding: 0.5rem 0.4rem;
+  border: none;
+  background: transparent;
+  cursor: pointer;
+  font-size: 0.85rem;
+  color: #555;
+  border-bottom: 2px solid transparent;
+}
+
+.left-tab:hover { background: #f5f5f5; }
+.left-tab.active { color: #c00; border-bottom-color: #c00; font-weight: 600; }
+
+.left-tab-content {
+  display: flex;
+  flex-direction: column;
+  gap: 0.4rem;
+}
 
 .search-input {
   padding: 0.4rem 0.7rem;

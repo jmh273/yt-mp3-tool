@@ -55,7 +55,9 @@ describe('authStore', () => {
     const { apiGet, apiPost } = await import('@/api')
     // auth store 直接 import router，mock router.push 不觸發 navigation guard
     // 只需確保 apiPost 被呼叫且 loggedIn 被設為 false
-    vi.mocked(apiGet).mockResolvedValue({ logged_in: true })
+    vi.mocked(apiGet)
+      .mockResolvedValueOnce({ logged_in: true })
+      .mockResolvedValueOnce({ logged_in: false })
     vi.mocked(apiPost).mockResolvedValue({})
 
     const auth = useAuthStore()

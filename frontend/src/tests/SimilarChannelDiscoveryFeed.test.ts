@@ -2,6 +2,7 @@ import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { mount, flushPromises } from '@vue/test-utils'
 import { setActivePinia, createPinia } from 'pinia'
 import SimilarChannelDiscoveryFeed from '@/components/SimilarChannelDiscoveryFeed.vue'
+import { useAuthStore } from '@/stores/auth'
 import { snap, extractCss } from './snap'
 
 vi.mock('@/api', () => ({
@@ -87,6 +88,8 @@ function emptyResponse() {
 describe('SimilarChannelDiscoveryFeed', () => {
   beforeEach(() => {
     setActivePinia(createPinia())
+    useAuthStore().currentAccount = 'alice@example.com'
+    localStorage.clear()
     vi.resetAllMocks()
   })
 
@@ -144,51 +147,39 @@ describe('SimilarChannelDiscoveryFeed', () => {
     expect(badges.length).toBeGreaterThan(0)
   })
 
-  it('點訂閱按鈕呼叫 apiPost 且成功後卡片淡出', async () => {
-    vi.useFakeTimers()
+  it('點加入觀察名單會加入 watchlist，且卡片不消失', async () => {
     const { apiGet, apiPost } = await import('@/api')
     vi.mocked(apiGet)
       .mockResolvedValueOnce(fastResponse())
       .mockResolvedValueOnce(fullResponse())
-    vi.mocked(apiPost).mockResolvedValueOnce({ success: true, channel_id: 'UC_new_a' })
 
     const wrapper = mount(SimilarChannelDiscoveryFeed)
     await flushPromises()
 
-    const subBtn = wrapper.find('.subscribe-btn')
-    expect(subBtn.exists()).toBe(true)
-    await subBtn.trigger('click')
+    const watchBtn = wrapper.find('.watch-btn')
+    expect(watchBtn.exists()).toBe(true)
+    await watchBtn.trigger('click')
     await flushPromises()
 
-    expect(vi.mocked(apiPost)).toHaveBeenCalledWith('/discovery/subscribe', {
-      channel_id: 'UC_new_a',
-    })
-
-    // 1.5s 後該卡片應從 list 移除
-    vi.advanceTimersByTime(1600)
-    await flushPromises()
-    const remaining = wrapper.findAll('.video-item')
-    // 訂閱的是 UC_new_a (vf1)，應該被移除，只剩 vf2
-    const ids = remaining.map((i) => i.text())
-    expect(ids.some((t) => t.includes('快速階段影片一'))).toBe(false)
-    vi.useRealTimers()
+    expect(apiPost).not.toHaveBeenCalled()
+    expect(wrapper.findAll('.video-item')).toHaveLength(2)
+    expect(wrapper.text()).toContain('✓ 已在觀察名單')
   })
 
-  it('訂閱失敗時顯示 toast 並保留卡片', async () => {
-    const { apiGet, apiPost } = await import('@/api')
+  it('已在觀察名單的頻道按鈕 disabled', async () => {
+    const { apiGet } = await import('@/api')
     vi.mocked(apiGet)
       .mockResolvedValueOnce(fastResponse())
       .mockResolvedValueOnce(fullResponse())
-    vi.mocked(apiPost).mockRejectedValueOnce(new Error('訂閱失敗：subscriptionForbidden'))
 
     const wrapper = mount(SimilarChannelDiscoveryFeed)
     await flushPromises()
-
-    await wrapper.find('.subscribe-btn').trigger('click')
+    await wrapper.find('.watch-btn').trigger('click')
     await flushPromises()
 
-    expect(wrapper.find('.toast.error').exists()).toBe(true)
-    expect(wrapper.findAll('.video-item').length).toBe(2)  // 卡片仍在
+    const firstButton = wrapper.findAll('.watch-btn')[0]!
+    expect(firstButton.text()).toContain('已在觀察名單')
+    expect(firstButton.attributes('disabled')).toBeDefined()
   })
 
   it('🔁 重新分析按鈕觸發 force_rebuild=true 並重置清單', async () => {

@@ -49,7 +49,6 @@
         v-for="v in discovery.videos"
         :key="v.video_id"
         class="video-item"
-        :class="{ 'fade-out': fadingOut.has(v.channel_id || '') }"
       >
         <div class="thumb-wrapper">
           <input
@@ -74,14 +73,13 @@
             </div>
           </div>
           <button
-            class="subscribe-btn"
-            :class="{ 'subscribed': discovery.isSubscribed(v.channel_id || '') }"
-            :disabled="discovery.isSubscribed(v.channel_id || '') || subscribing.has(v.channel_id || '')"
-            @click="handleSubscribe(v.channel_id || '')"
+            class="watch-btn"
+            :class="{ watched: watchlist.has(v.channel_id || '') }"
+            :disabled="watchlist.has(v.channel_id || '')"
+            @click="handleAddToWatchlist(v)"
           >
-            <template v-if="discovery.isSubscribed(v.channel_id || '')">✓ 已訂閱</template>
-            <template v-else-if="subscribing.has(v.channel_id || '')">訂閱中...</template>
-            <template v-else>➕ 訂閱</template>
+            <template v-if="watchlist.has(v.channel_id || '')">✓ 已在觀察名單</template>
+            <template v-else>👁 加入觀察名單</template>
           </button>
         </div>
       </li>
@@ -108,36 +106,23 @@
         {{ discovery.loadingPhase === 'more' ? '載入中...' : '🔄 換一批' }}
       </button>
     </div>
-
-    <!-- Toast -->
-    <div v-if="toast" class="toast" :class="toast.type">{{ toast.text }}</div>
   </div>
 </template>
 
 <script setup lang="ts">
-import { ref, onMounted } from 'vue'
+import { onMounted } from 'vue'
 import { useDownloadStore } from '@/stores/download'
 import { useQuotaStore } from '@/stores/quota'
 import { usePlayerStore } from '@/stores/player'
 import { useDiscoveryStore } from '@/stores/discovery'
+import { useWatchlistStore } from '@/stores/watchlist'
+import type { VideoItem } from '@/stores/download'
 
 const download = useDownloadStore()
 const quota = useQuotaStore()
 const player = usePlayerStore()
 const discovery = useDiscoveryStore()
-
-const subscribing = ref<Set<string>>(new Set())
-const fadingOut = ref<Set<string>>(new Set())
-const toast = ref<{ text: string; type: 'success' | 'error' } | null>(null)
-let toastTimer: ReturnType<typeof setTimeout> | null = null
-
-function showToast(text: string, type: 'success' | 'error') {
-  toast.value = { text, type }
-  if (toastTimer) clearTimeout(toastTimer)
-  toastTimer = setTimeout(() => {
-    toast.value = null
-  }, 3000)
-}
+const watchlist = useWatchlistStore()
 
 async function handleRefreshAnalysis() {
   if (!confirm('重新分析訂閱會花 10–30 秒（重打 YouTube API 撈關鍵字 + 重抓相似頻道）。要繼續嗎？')) return
@@ -154,26 +139,13 @@ function formatAnalyzedAt(iso?: string | null): string {
   }
 }
 
-async function handleSubscribe(channelId: string) {
-  if (!channelId || subscribing.value.has(channelId) || discovery.isSubscribed(channelId)) return
-  subscribing.value.add(channelId)
-  try {
-    const result = await discovery.subscribe(channelId)
-    if (result.success) {
-      // mark badge → fade out → remove
-      fadingOut.value.add(channelId)
-      showToast('已訂閱！', 'success')
-      setTimeout(() => {
-        discovery.removeChannelFromList(channelId)
-        fadingOut.value.delete(channelId)
-      }, 1500)
-    } else {
-      showToast(result.error || '訂閱失敗', 'error')
-    }
-  } finally {
-    subscribing.value.delete(channelId)
-    quota.refresh()
-  }
+function handleAddToWatchlist(video: VideoItem) {
+  if (!video.channel_id) return
+  watchlist.add({
+    channel_id: video.channel_id,
+    title: video.channel_title || video.channel_id,
+    thumbnail: video.thumbnail,
+  })
 }
 
 onMounted(async () => {
@@ -277,10 +249,9 @@ ul { list-style: none; padding: 0; margin: 0; }
 .video-item {
   display: flex; flex-direction: row; align-items: flex-start; gap: 0.8rem;
   background: #fff; padding: 0.5rem; border-radius: 8px; border: 1px solid #eee;
-  transition: opacity 0.6s ease, transform 0.6s ease;
+  transition: border-color 0.15s ease, background 0.15s ease;
 }
 .video-item:hover { background: #fdfdfd; border-color: #ddd; }
-.video-item.fade-out { opacity: 0; transform: translateX(20px); }
 
 .thumb-wrapper {
   position: relative; width: 140px; flex-shrink: 0;
@@ -314,16 +285,16 @@ ul { list-style: none; padding: 0; margin: 0; }
 .sep { font-size: 0.75rem; color: #aaa; }
 .views { font-size: 0.75rem; color: #888; font-variant-numeric: tabular-nums; }
 
-.subscribe-btn {
+.watch-btn {
   margin-top: 0.4rem;
   padding: 0.3rem 0.7rem; font-size: 0.78rem;
   background: #6a1b9a; color: white; border: none; border-radius: 4px;
   cursor: pointer; align-self: flex-start;
   transition: background 0.15s;
 }
-.subscribe-btn:hover:not(:disabled) { background: #4a148c; }
-.subscribe-btn:disabled { background: #bdbdbd; cursor: not-allowed; }
-.subscribe-btn.subscribed { background: #888; }
+.watch-btn:hover:not(:disabled) { background: #4a148c; }
+.watch-btn:disabled { background: #bdbdbd; cursor: not-allowed; }
+.watch-btn.watched { background: #888; }
 
 .error, .empty { padding: 1rem; text-align: center; color: #666; }
 .error { color: #d32f2f; }
@@ -343,11 +314,4 @@ ul { list-style: none; padding: 0; margin: 0; }
 .load-more-btn:hover:not(:disabled) { background: #f3e5f5; }
 .load-more-btn:disabled { opacity: 0.6; cursor: not-allowed; }
 
-.toast {
-  position: fixed; bottom: 20px; left: 50%; transform: translateX(-50%);
-  padding: 0.6rem 1.2rem; border-radius: 6px; font-size: 0.9rem;
-  z-index: 1000; box-shadow: 0 2px 8px rgba(0,0,0,0.15);
-}
-.toast.success { background: #e6f4ea; color: #2ea043; border: 1px solid #b5e0c2; }
-.toast.error { background: #fce8e9; color: #d1242f; border: 1px solid #f5b3b6; }
 </style>

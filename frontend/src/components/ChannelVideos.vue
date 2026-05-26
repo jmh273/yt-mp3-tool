@@ -65,12 +65,18 @@ async function fetchPage(token?: string) {
   }
   
   try {
-    const data = await apiGet<{ items: VideoItem[], nextPageToken: string, channelTitle: string }>(url)
+    const data = await apiGet<{
+      items?: VideoItem[]
+      videos?: VideoItem[]
+      nextPageToken?: string
+      channelTitle?: string
+    }>(url)
+    const pageItems = data.items ?? data.videos ?? []
     if (token) {
-      videos.value.push(...data.items)
+      videos.value.push(...pageItems)
     } else {
-      videos.value = data.items
-      channelTitle.value = data.channelTitle
+      videos.value = pageItems
+      channelTitle.value = data.channelTitle ?? pageItems[0]?.channel_title ?? ''
     }
     nextPageToken.value = data.nextPageToken || ''
   } catch (e: any) {

@@ -601,6 +601,45 @@ def get_subscriptions():
     return {"channels": channels}
 
 
+def _subscription_error_status(message: str) -> int:
+    if "subscriptionDuplicate" in message:
+        return 409
+    if "subscriptionForbidden" in message or "forbidden" in message.lower():
+        return 403
+    if "subscriptionNotFound" in message or "notFound" in message:
+        return 404
+    return 500
+
+
+def _insert_subscription(youtube, channel_id: str) -> dict:
+    resp = youtube.subscriptions().insert(
+        part="snippet",
+        body={"snippet": {"resourceId": {"kind": "youtube#channel", "channelId": channel_id}}},
+    ).execute()
+    consume_quota(_QUOTA_SUBSCRIPTIONS_INSERT)
+    snippet = resp.get("snippet", {})
+    resource = snippet.get("resourceId", {})
+    thumbnails = snippet.get("thumbnails", {})
+    channel = {
+        "subscription_id": resp.get("id", ""),
+        "channel_id": resource.get("channelId", channel_id),
+        "title": snippet.get("title", ""),
+        "thumbnail": thumbnails.get("default", {}).get("url", ""),
+    }
+    return {"success": True, "subscription_id": channel["subscription_id"], "channel": channel}
+
+
+@app.post("/subscriptions/{channel_id}")
+def post_subscription(channel_id: str):
+    creds = require_credentials()
+    youtube = build("youtube", "v3", credentials=creds)
+    try:
+        return _insert_subscription(youtube, channel_id)
+    except Exception as e:
+        msg = str(e)
+        raise HTTPException(status_code=_subscription_error_status(msg), detail=f"訂閱失敗：{msg}")
+
+
 @app.delete("/subscriptions/{subscription_id}")
 def delete_subscription(subscription_id: str):
     creds = require_credentials()
