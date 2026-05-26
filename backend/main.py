@@ -1747,8 +1747,8 @@ async def get_latest_videos(
             except Exception:
                 continue
 
-    videos.sort(key=lambda v: v["published"], reverse=True)
-    videos = videos[:100]
+    # 順序很重要：先 enhance (duration filter)，再排序+截 100。
+    # 反過來會發生「最新 100 部全是 shorts，過濾後只剩 50 部都在 15h 內」的 bug。
     videos = enhance_and_filter_videos(
         youtube,
         videos,
@@ -1756,6 +1756,8 @@ async def get_latest_videos(
         min_duration_override=min_duration_minutes,
         max_duration_override=max_duration_minutes,
     )
+    videos.sort(key=lambda v: v["published"], reverse=True)
+    videos = videos[:100]
 
     downloaded_stems = _today_downloaded_stems()
     for v in videos:

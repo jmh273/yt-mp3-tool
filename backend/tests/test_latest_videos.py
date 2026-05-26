@@ -5,6 +5,10 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 import main
 
+# 在 autouse mock_enhance_and_filter fixture 替換之前保存真實函式 reference，
+# 給需要驗證 duration filter 行為的 test 使用。
+_REAL_ENHANCE = main.enhance_and_filter_videos
+
 
 def _mock_valid_creds():
     creds = MagicMock()
@@ -181,6 +185,75 @@ async def test_latest_videos_fetches_50_per_channel_ignoring_videos_per_channel_
     assert captured_limits == [50], (
         f"latest-videos 應抓 50 部/頻道（API 單次上限），實際抓了 {captured_limits}。"
         " 若這裡又變回 5 表示 videos_per_channel 又被誤用了。"
+    )
+
+
+async def test_latest_videos_duration_filter_runs_before_100_cap(client):
+    """Regression: duration filter MUST run before 100-cap truncation。
+    若反過來（先 cap 100、再 duration filter），高頻道在新時段灌進大量 shorts 會把舊但合格的影片擠出 cap，
+    使用者就算設長時窗也只看到「最新一段的 duration-合格影片」而非「整個時窗的合格影片」。
+
+    Setup: 1 channel, 200 videos within 48h:
+      - 前 150 部 (時間較新, 0-15h) 全是 shorts (60 秒, 在 3min-60min 過濾範圍外)
+      - 後 50 部 (時間較舊, 15-48h) 都是 normal (10 分鐘, 過濾範圍內)
+    Expected: 回傳 50 部 normal 影片，全部位於 15-48h 區間。
+    若 bug 復活，回傳會是 0 部（前 100 部全 shorts 被砍光）。
+    """
+    channels = [{"channel_id": "UC_a", "title": "Chan A"}]
+
+    shorts = [_make_video(f"short{i}", hours_ago=i * 0.1) for i in range(150)]  # 0-15h, 全 shorts
+    normals = [_make_video(f"norm{i}", hours_ago=15 + i * 0.5) for i in range(50)]  # 15-40h, 全 10min
+    all_videos = shorts + normals
+
+    def fake_videos_list(part, id):
+        ids = id.split(",")
+        items = []
+        for vid in ids:
+            duration = "PT1M" if vid.startswith("short") else "PT10M"
+            items.append({
+                "id": vid,
+                "snippet": {"liveBroadcastContent": "none"},
+                "contentDetails": {"duration": duration},
+            })
+        m = MagicMock()
+        m.execute.return_value = {"items": items}
+        return m
+
+    mock_yt = MagicMock()
+    mock_yt.subscriptions().list().execute.return_value = {
+        "items": [{"snippet": {
+            "title": "Chan A",
+            "resourceId": {"channelId": "UC_a"},
+            "thumbnails": {"default": {"url": ""}},
+        }}]
+    }
+    mock_yt.videos.return_value.list.side_effect = fake_videos_list
+
+    async def fake_fetch(youtube, channel_id, limit, channel_title=""):
+        return channel_id, all_videos
+
+    # 這個 test 要驗證 duration filter 真的有跑，所以用 _REAL_ENHANCE 覆寫 autouse 的 passthrough mock
+    with patch("main.load_credentials", return_value=_mock_valid_creds()), \
+         patch("main.build", return_value=mock_yt), \
+         patch("main.fetch_channel_videos_api", side_effect=fake_fetch), \
+         patch("main.enhance_and_filter_videos", side_effect=_REAL_ENHANCE):
+        async with client as c:
+            await c.put("/settings", json={
+                "min_duration_minutes": 3,
+                "max_duration_minutes": 60,
+            })
+            r = await c.get("/latest-videos?hours=48")
+
+    assert r.status_code == 200
+    videos = r.json()["videos"]
+    ids = [v["video_id"] for v in videos]
+    # 應該收到 50 部 normal，0 部 shorts
+    norm_count = sum(1 for vid in ids if vid.startswith("norm"))
+    short_count = sum(1 for vid in ids if vid.startswith("short"))
+    assert short_count == 0, f"shorts 應被 duration filter 全部濾掉，但有 {short_count} 部"
+    assert norm_count == 50, (
+        f"normal 應全部留下，實際 {norm_count}。"
+        f" 若是 0，表示 duration filter 跑在 100-cap 之後，所有 normal 都在 cap 外被丟。"
     )
 
 
