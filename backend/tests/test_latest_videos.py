@@ -159,6 +159,31 @@ async def test_latest_videos_rss_error_skipped(client):
     assert any(v["video_id"] == "v_good" for v in videos)
 
 
+async def test_latest_videos_fetches_50_per_channel_ignoring_videos_per_channel_setting(client):
+    """latest-videos 應對每個訂閱頻道從 YouTube API 抓 50 部（單次上限），
+    不受 settings.videos_per_channel 限制——否則高頻道在時窗內的早期影片會被截斷。
+    Regression: 使用者設 30h 時窗卻只看到 11h 內 53 部影片。"""
+    channels = [{"channel_id": "UC_a", "title": "Chan A"}]
+    captured_limits = []
+
+    async def fake_fetch(youtube, channel_id, limit, channel_title=""):
+        captured_limits.append(limit)
+        return channel_id, []
+
+    with patch("main.load_credentials", return_value=_mock_valid_creds()), \
+         patch("main.build", return_value=_mock_youtube_subscriptions(channels)), \
+         patch("main.fetch_channel_videos_api", side_effect=fake_fetch):
+        async with client as c:
+            # 故意把 videos_per_channel 設低，確認 latest-videos 不受影響
+            await c.put("/settings", json={"videos_per_channel": 5})
+            await c.get("/latest-videos?hours=30")
+
+    assert captured_limits == [50], (
+        f"latest-videos 應抓 50 部/頻道（API 單次上限），實際抓了 {captured_limits}。"
+        " 若這裡又變回 5 表示 videos_per_channel 又被誤用了。"
+    )
+
+
 async def test_latest_videos_capped_at_100(client):
     """回傳影片數上限為 100"""
     channels = [{"channel_id": f"UC_{i}", "title": f"Chan {i}"} for i in range(5)]

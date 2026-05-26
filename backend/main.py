@@ -1716,7 +1716,10 @@ async def get_latest_videos(
             break
 
     # 並發擷取 API
-    limit = settings.get("videos_per_channel", 5)
+    # 注意：此處不使用 settings["videos_per_channel"]（那是「點頻道看影片」endpoint 的 UI 顯示上限）。
+    # latest-videos 是時窗聚合，必須抓滿單次 API 上限 50，否則高更新頻道在時窗內的早期影片
+    # 會被截在 playlistItems 第一頁外。50 是 YouTube playlistItems 單次最大值，1 unit/call。
+    limit = 50
     sem = asyncio.Semaphore(20)
 
     async def _bound_fetch(ch):
