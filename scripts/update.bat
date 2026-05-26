@@ -73,21 +73,62 @@ if errorlevel 1 (
     exit /b 4
 )
 
-REM -- stop running instance ---------------------------------------------------
+REM -- stop running instance (kill process tree + wait for full release) -------
 echo [update] Stopping any running yt-mp3-tool.exe...
-taskkill /F /IM yt-mp3-tool.exe >nul 2>nul
-REM small wait so file handles release
+taskkill /F /T /IM yt-mp3-tool.exe >nul 2>nul
+
+REM Poll until process is gone (up to ~10 seconds). Without this the DLL files
+REM may still be locked when we try to overwrite them, causing partial extracts.
+set /a _wait=0
+:wait_kill
+tasklist /FI "IMAGENAME eq yt-mp3-tool.exe" 2>nul | find /I "yt-mp3-tool.exe" >nul
+if errorlevel 1 goto :killed
+set /a _wait+=1
+if !_wait! GEQ 20 (
+    echo [update] WARNING: yt-mp3-tool.exe still running after 10s wait; continuing anyway.
+    goto :killed
+)
 ping -n 2 127.0.0.1 >nul
+goto :wait_kill
+:killed
+
+REM Extra grace period for Windows to release DLL handles after process exit
+ping -n 4 127.0.0.1 >nul
 
 REM -- extract over install dir -------------------------------------------------
 if not exist "%INSTALL_DIR%" mkdir "%INSTALL_DIR%"
 echo [update] Extracting over %INSTALL_DIR%...
+REM Use $ErrorActionPreference='Stop' + try/catch so non-terminating file-lock
+REM errors (e.g., DLL still loaded) propagate as exit code 1. The previous
+REM version's plain Expand-Archive only emitted warnings and returned 0,
+REM silently leaving partial extracts that corrupted the install.
 for %%Z in ("%DOWNLOAD_DIR%\*.zip") do (
-    powershell -NoProfile -Command "Expand-Archive -Path '%%Z' -DestinationPath '%INSTALL_DIR%' -Force"
+    powershell -NoProfile -ExecutionPolicy Bypass -Command ^
+      "$ErrorActionPreference='Stop'; try { Expand-Archive -Path '%%Z' -DestinationPath '%INSTALL_DIR%' -Force; exit 0 } catch { Write-Host ('[update] PowerShell error: ' + $_.Exception.Message); exit 1 }"
     if errorlevel 1 (
-        echo [update] ERROR: extract failed.
+        echo [update] ERROR: extract failed. Install may be partially corrupted.
+        echo [update]   Recovery: close any yt-mp3-tool.exe window, then either
+        echo [update]     a^) rerun update.bat to retry, or
+        echo [update]     b^) rmdir /s /q "%INSTALL_DIR%" and rerun for clean install.
         exit /b 5
     )
+)
+
+REM -- post-extract sanity check -----------------------------------------------
+if not exist "%INSTALL_DIR%\yt-mp3-tool.exe" (
+    echo [update] ERROR: yt-mp3-tool.exe missing after extract; install corrupted.
+    echo [update]   Recovery: rmdir /s /q "%INSTALL_DIR%" then rerun update.bat.
+    exit /b 6
+)
+set NEW_VERSION=unknown
+if exist "%INSTALL_DIR%\_version.txt" (
+    for /f "usebackq tokens=*" %%v in ("%INSTALL_DIR%\_version.txt") do set NEW_VERSION=%%v
+)
+if not "!NEW_VERSION!"=="%LATEST_VERSION%" (
+    echo [update] ERROR: version mismatch after extract. Expected %LATEST_VERSION%, got !NEW_VERSION!.
+    echo [update]   The zip may not have replaced all files. Try clean reinstall:
+    echo [update]   rmdir /s /q "%INSTALL_DIR%" then rerun update.bat.
+    exit /b 7
 )
 
 REM -- restart -----------------------------------------------------------------
