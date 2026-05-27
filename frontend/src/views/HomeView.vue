@@ -373,18 +373,24 @@ async function handleLogoutAccount(email: string) {
 
 async function handleAddAccount() {
   accountDropdownOpen.value = false
+  const prevAccountCount = auth.accounts.length
   await auth.addAccount()
-  // 使用者需在瀏覽器完成 OAuth，之後 poll
+  // 使用者需在瀏覽器完成 OAuth，之後 poll 直到帳號數量增加
   const deadline = Date.now() + 120_000
+  let added = false
   while (Date.now() < deadline) {
     await new Promise(r => setTimeout(r, 2000))
     await auth.checkStatus()
-    if (auth.accounts.length > channels.value.length) break // 新帳號出現
+    if (auth.accounts.length > prevAccountCount) { added = true; break } // 新帳號出現
   }
-  // 重新載入
-  if (auth.loggedIn) {
+  // 後端在 OAuth 完成時已把 current 切到新帳號，重新載入其訂閱清單
+  if (added && auth.loggedIn) {
     loading.value = true
+    error.value = ''
     try {
+      selectedChannelId.value = null
+      activeView.value = 'none'
+      channelDates.value = {}
       const data = await apiGet<{ channels: Channel[] }>('/subscriptions')
       channels.value = data.channels
       quota.refresh()
