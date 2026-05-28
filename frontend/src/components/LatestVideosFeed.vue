@@ -3,9 +3,9 @@
     <div class="feed-header">
       <h2>最新影片</h2>
       <span class="badge">{{ appliedBadge }}</span>
-      <span v-if="!loading && !error" class="count-badge" :class="{ 'count-cap': videos.length >= 100 }">
+      <span v-if="!loading && !error" class="count-badge">
         {{ videos.length }} 部
-        <template v-if="videos.length >= 100">（已達上限，調短時窗看完整列表）</template>
+        <template v-if="displayCount < videos.length">（顯示 {{ displayedVideos.length }} / {{ videos.length }}）</template>
       </span>
     </div>
 
@@ -55,7 +55,7 @@
     <div v-else-if="videos.length === 0" class="status">此條件下無影片</div>
 
     <ul v-else class="video-grid">
-      <li v-for="v in videos" :key="v.video_id" class="video-item">
+      <li v-for="v in displayedVideos" :key="v.video_id" class="video-item">
         <div class="thumb-wrapper">
           <input
             type="checkbox"
@@ -76,6 +76,12 @@
         </div>
       </li>
     </ul>
+
+    <div v-if="!loading && !error && displayCount < videos.length" class="load-more-bar">
+      <button class="load-more-btn" @click="loadMore">
+        載入更多（還有 {{ videos.length - displayedVideos.length }} 部）
+      </button>
+    </div>
   </div>
 </template>
 
@@ -93,6 +99,14 @@ const videos = ref<VideoItem[]>([])
 const loading = ref(true)
 const fetching = ref(false)
 const error = ref('')
+
+const PAGE_SIZE = 50
+const displayCount = ref(PAGE_SIZE)
+const displayedVideos = computed(() => videos.value.slice(0, displayCount.value))
+
+function loadMore() {
+  displayCount.value += PAGE_SIZE
+}
 
 const allowRedownload = ref(false)
 
@@ -153,6 +167,7 @@ async function fetchVideos(h: number, mn: number, mx: number) {
     })
     const data = await apiGet<{ videos: VideoItem[] }>(`/latest-videos?${params.toString()}`)
     videos.value = data.videos
+    displayCount.value = PAGE_SIZE
     appliedHours.value = h
     appliedMin.value = mn
     appliedMax.value = mx
@@ -229,12 +244,6 @@ function formatDate(iso: string): string {
   font-size: 0.78rem;
   font-variant-numeric: tabular-nums;
 }
-.count-badge.count-cap {
-  background: #fff3e0;
-  color: #b25e00;
-  border-color: #ffd599;
-}
-
 .filter-bar {
   display: flex;
   flex-wrap: wrap;
@@ -340,4 +349,16 @@ ul { list-style: none; padding: 0; margin: 0; }
   line-height: 1;
   font-variant-numeric: tabular-nums;
 }
+
+.load-more-bar { display: flex; justify-content: center; margin-top: 1.2rem; }
+.load-more-btn {
+  padding: 0.5rem 1.6rem;
+  background: #fff;
+  color: #1565c0;
+  border: 1px solid #bbdefb;
+  border-radius: 20px;
+  cursor: pointer;
+  font-size: 0.85rem;
+}
+.load-more-btn:hover { background: #e3f2fd; }
 </style>

@@ -188,16 +188,13 @@ async def test_latest_videos_fetches_50_per_channel_ignoring_videos_per_channel_
     )
 
 
-async def test_latest_videos_duration_filter_runs_before_100_cap(client):
-    """Regression: duration filter MUST run before 100-cap truncation。
-    若反過來（先 cap 100、再 duration filter），高頻道在新時段灌進大量 shorts 會把舊但合格的影片擠出 cap，
-    使用者就算設長時窗也只看到「最新一段的 duration-合格影片」而非「整個時窗的合格影片」。
+async def test_latest_videos_applies_duration_filter(client):
+    """duration filter 應作用於整個時窗：範圍外的 shorts 全濾掉，合格的 normal 全留下。
 
     Setup: 1 channel, 200 videos within 48h:
       - 前 150 部 (時間較新, 0-15h) 全是 shorts (60 秒, 在 3min-60min 過濾範圍外)
       - 後 50 部 (時間較舊, 15-48h) 都是 normal (10 分鐘, 過濾範圍內)
-    Expected: 回傳 50 部 normal 影片，全部位於 15-48h 區間。
-    若 bug 復活，回傳會是 0 部（前 100 部全 shorts 被砍光）。
+    Expected: 回傳 50 部 normal 影片，全部位於 15-48h 區間，0 部 shorts。
     """
     channels = [{"channel_id": "UC_a", "title": "Chan A"}]
 
@@ -251,32 +248,19 @@ async def test_latest_videos_duration_filter_runs_before_100_cap(client):
     norm_count = sum(1 for vid in ids if vid.startswith("norm"))
     short_count = sum(1 for vid in ids if vid.startswith("short"))
     assert short_count == 0, f"shorts 應被 duration filter 全部濾掉，但有 {short_count} 部"
-    assert norm_count == 50, (
-        f"normal 應全部留下，實際 {norm_count}。"
-        f" 若是 0，表示 duration filter 跑在 100-cap 之後，所有 normal 都在 cap 外被丟。"
-    )
+    assert norm_count == 50, f"normal 應全部留下，實際 {norm_count}"
 
 
-async def test_latest_videos_capped_at_100(client):
-    """回傳影片數上限為 100"""
-    channels = [{"channel_id": f"UC_{i}", "title": f"Chan {i}"} for i in range(5)]
-    # 每頻道產生 30 支影片（共 150），應截斷至 100
-    all_videos = [_make_video(f"v{i}", hours_ago=i * 0.01) for i in range(150)]
+async def test_latest_videos_returns_all_matching_videos(client):
+    """移除 100 上限後，符合條件的影片應全部回傳，依 published 由新到舊排序。"""
+    channels = [{"channel_id": "UC_a", "title": "Chan A"}]
+    # 150 部 distinct 影片，全在時窗內；i 越大代表越舊（hours_ago 越大）
+    all_videos = [_make_video(f"v{i:03d}", hours_ago=1 + i * 0.01) for i in range(150)]
 
-    mock_yt = MagicMock()
-    mock_yt.subscriptions().list().execute.return_value = {
-        "items": [
-            {"snippet": {
-                "title": ch["title"],
-                "resourceId": {"channelId": ch["channel_id"]},
-                "thumbnails": {"default": {"url": ""}},
-            }}
-            for ch in channels
-        ]
-    }
+    mock_yt = _mock_youtube_subscriptions(channels)
 
     async def fake_fetch(youtube, channel_id, limit, channel_title=""):
-        return channel_id, all_videos[:30]
+        return channel_id, all_videos
 
     with patch("main.load_credentials", return_value=_mock_valid_creds()), \
          patch("main.build", return_value=mock_yt), \
@@ -284,7 +268,11 @@ async def test_latest_videos_capped_at_100(client):
         async with client as c:
             r = await c.get("/latest-videos?hours=9999")
 
-    assert len(r.json()["videos"]) <= 100
+    assert r.status_code == 200
+    videos = r.json()["videos"]
+    assert len(videos) == 150, f"應回傳全部 150 部（無 100 上限），實際 {len(videos)}"
+    published = [v["published"] for v in videos]
+    assert published == sorted(published, reverse=True), "應依 published 由新到舊排序"
 
 
 # ── downloaded_today 標記（依今日下載資料夾比對） ──────────────────────────────

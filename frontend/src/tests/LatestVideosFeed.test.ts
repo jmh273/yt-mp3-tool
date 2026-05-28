@@ -216,4 +216,59 @@ describe('LatestVideosFeed', () => {
 
     expect(wrapper.find('.date').text()).toContain('天前')
   })
+
+  it('結果超過一頁時只渲染 50 部並顯示「載入更多」', async () => {
+    const { apiGet } = await import('@/api')
+    const videos = Array.from({ length: 120 }, (_, i) => makeVideo(`v${i}`, i * 0.01))
+    vi.mocked(apiGet)
+      .mockResolvedValueOnce({ latest_hours: 24 })
+      .mockResolvedValueOnce({ videos })
+
+    const wrapper = mount(LatestVideosFeed)
+    await flushPromises()
+
+    expect(wrapper.findAll('.video-item')).toHaveLength(50)
+    expect(wrapper.find('.load-more-btn').exists()).toBe(true)
+    expect(wrapper.find('.count-badge').text()).toContain('120 部')
+    expect(wrapper.find('.count-badge').text()).toContain('50 / 120')
+  })
+
+  it('點「載入更多」逐頁追加，全部顯示後按鈕消失', async () => {
+    const { apiGet } = await import('@/api')
+    const videos = Array.from({ length: 120 }, (_, i) => makeVideo(`v${i}`, i * 0.01))
+    vi.mocked(apiGet)
+      .mockResolvedValueOnce({ latest_hours: 24 })
+      .mockResolvedValueOnce({ videos })
+
+    const wrapper = mount(LatestVideosFeed)
+    await flushPromises()
+
+    await wrapper.find('.load-more-btn').trigger('click')
+    expect(wrapper.findAll('.video-item')).toHaveLength(100)
+    expect(wrapper.find('.load-more-btn').exists()).toBe(true)
+
+    await wrapper.find('.load-more-btn').trigger('click')
+    expect(wrapper.findAll('.video-item')).toHaveLength(120)
+    expect(wrapper.find('.load-more-btn').exists()).toBe(false)
+  })
+
+  it('重新套用篩選後，顯示清單重置回第一頁', async () => {
+    const { apiGet } = await import('@/api')
+    const videos = Array.from({ length: 120 }, (_, i) => makeVideo(`v${i}`, i * 0.01))
+    // 尾端用 mockResolvedValue 兜底，因為 fetchVideos 的 finally 會呼叫 quota.refresh()（共用 apiGet）
+    vi.mocked(apiGet)
+      .mockResolvedValueOnce({ latest_hours: 24 })
+      .mockResolvedValue({ videos })
+
+    const wrapper = mount(LatestVideosFeed)
+    await flushPromises()
+
+    await wrapper.find('.load-more-btn').trigger('click')
+    expect(wrapper.findAll('.video-item')).toHaveLength(100)
+
+    await wrapper.find('.apply-btn').trigger('click')
+    await flushPromises()
+
+    expect(wrapper.findAll('.video-item')).toHaveLength(50)
+  })
 })
