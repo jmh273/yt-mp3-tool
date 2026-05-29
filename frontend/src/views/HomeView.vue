@@ -123,11 +123,19 @@
                 {{ formatChannelDate(channelDates[ch.channel_id]!) }}
               </span>
             </div>
+            <button
+              class="watchlist-add-btn"
+              :class="{ added: watchlist.has(ch.channel_id) }"
+              :disabled="watchlist.has(ch.channel_id)"
+              @click.stop="addToWatchlist(ch)"
+              :title="watchlist.has(ch.channel_id) ? '已在觀察名單' : '加入觀察名單'"
+            >{{ watchlist.has(ch.channel_id) ? '✅' : '👁️' }}</button>
             <button class="delete-btn" @click.stop="deleteChannel(ch)" title="取消訂閱">🗑️</button>
           </div>
         </div>
         <WatchlistPanel
           v-else
+          :subscribed-ids="subscribedIds"
           @select-channel="selectWatchlistChannel"
           @subscribed="appendSubscribedChannel"
         />
@@ -189,6 +197,7 @@ import { useAuthStore } from '@/stores/auth'
 import { useDownloadStore } from '@/stores/download'
 import { useNormalizeStore } from '@/stores/normalize'
 import { useQuotaStore } from '@/stores/quota'
+import { useWatchlistStore } from '@/stores/watchlist'
 import ChannelVideos from '@/components/ChannelVideos.vue'
 import LatestVideosFeed from '@/components/LatestVideosFeed.vue'
 import TrendingVideosFeed from '@/components/TrendingVideosFeed.vue'
@@ -210,6 +219,7 @@ const auth = useAuthStore()
 const downloadStore = useDownloadStore()
 const normalizeStore = useNormalizeStore()
 const quota = useQuotaStore()
+const watchlist = useWatchlistStore()
 const quotaUsedDisplay = computed(() => quota.used === null ? '—' : quota.used)
 const channels = ref<Channel[]>([])
 const searchQuery = ref('')
@@ -229,6 +239,8 @@ const filteredChannels = computed(() => {
   if (!q) return channels.value
   return channels.value.filter(ch => ch.title.toLowerCase().includes(q))
 })
+
+const subscribedIds = computed(() => new Set(channels.value.map(ch => ch.channel_id)))
 
 onMounted(async () => {
   apiGet<{ version: string }>('/version')
@@ -259,6 +271,10 @@ function selectWatchlistChannel(id: string) {
 function appendSubscribedChannel(ch: Channel) {
   if (channels.value.some((existing) => existing.channel_id === ch.channel_id)) return
   channels.value.push(ch)
+}
+
+function addToWatchlist(ch: Channel) {
+  watchlist.add({ channel_id: ch.channel_id, title: ch.title, thumbnail: ch.thumbnail })
 }
 
 function showLatest() {
@@ -551,6 +567,11 @@ h1 { margin: 0; font-size: 1.2rem; }
 .delete-btn { background: none; border: none; cursor: pointer; opacity: 0.5; padding: 0.2rem; }
 .channel-card:hover .delete-btn { opacity: 1; }
 .delete-btn:hover { color: red; }
+
+.watchlist-add-btn { background: none; border: none; cursor: pointer; opacity: 0.5; padding: 0.2rem; font-size: 0.9rem; }
+.channel-card:hover .watchlist-add-btn { opacity: 1; }
+.watchlist-add-btn:hover:not(:disabled) { opacity: 1; }
+.watchlist-add-btn.added { opacity: 1; cursor: default; }
 
 .middle-pane { overflow-y: auto; padding-right: 0.5rem; }
 

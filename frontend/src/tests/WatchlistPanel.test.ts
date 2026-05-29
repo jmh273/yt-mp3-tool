@@ -23,11 +23,13 @@ describe('WatchlistPanel', () => {
     vi.resetAllMocks()
   })
 
-  it('shows distinct empty states for signed out and signed in users', async () => {
+  it('shows the shared empty state regardless of login state', async () => {
     const auth = useAuthStore()
     auth.currentAccount = ''
     const signedOut = mount(WatchlistPanel)
-    expect(signedOut.text()).toContain('請先登入')
+    // 共用名單：未登入也不阻擋，空名單顯示同一段空狀態文字
+    expect(signedOut.text()).not.toContain('請先登入')
+    expect(signedOut.text()).toContain('還沒加入任何頻道')
 
     auth.currentAccount = 'alice@example.com'
     await nextTick()
@@ -87,6 +89,92 @@ describe('WatchlistPanel', () => {
 
     expect(wrapper.emitted('subscribed')?.[0]![0]).toMatchObject({ subscription_id: 'sub-1', channel_id: 'UC1' })
     expect(wrapper.text()).toContain('已訂閱：Alpha')
+  })
+
+  it('disables the subscribe icon for a channel already subscribed; remove stays enabled', async () => {
+    const auth = useAuthStore()
+    auth.currentAccount = 'alice@example.com'
+    const store = useWatchlistStore()
+    await nextTick()
+    store.add({ channel_id: 'UC1', title: 'Alpha', thumbnail: 'a.jpg' })
+
+    const wrapper = mount(WatchlistPanel, {
+      props: { subscribedIds: new Set(['UC1']) },
+    })
+
+    const promote = wrapper.find('[aria-label="訂閱 Alpha"]')
+    expect(promote.attributes('disabled')).toBeDefined()
+    expect(promote.attributes('title')).toBe('已訂閱')
+    // remove 不受影響
+    expect(wrapper.find('[aria-label="移除 Alpha"]').attributes('disabled')).toBeUndefined()
+  })
+
+  it('keeps subscribe enabled for a non-subscribed channel and never POSTs for a subscribed one', async () => {
+    const { apiPost } = await import('@/api')
+    const auth = useAuthStore()
+    auth.currentAccount = 'alice@example.com'
+    const store = useWatchlistStore()
+    await nextTick()
+    store.add({ channel_id: 'UC1', title: 'Alpha', thumbnail: 'a.jpg' })
+    store.add({ channel_id: 'UC2', title: 'Beta', thumbnail: 'b.jpg' })
+
+    const wrapper = mount(WatchlistPanel, {
+      props: { subscribedIds: new Set(['UC1']) },
+    })
+
+    // 未訂閱的 Beta 可點
+    expect(wrapper.find('[aria-label="訂閱 Beta"]').attributes('disabled')).toBeUndefined()
+
+    // 點已訂閱的 Alpha 的訂閱鈕不會發出請求
+    await wrapper.find('[aria-label="訂閱 Alpha"]').trigger('click')
+    expect(apiPost).not.toHaveBeenCalled()
+  })
+
+  it('on subscriptionDuplicate shows a non-error notice, keeps the row, and does not emit subscribed', async () => {
+    const { apiPost } = await import('@/api')
+    vi.mocked(apiPost).mockRejectedValue(
+      new Error('訂閱失敗：<HttpError 400 ... reason: subscriptionDuplicate>'),
+    )
+    const auth = useAuthStore()
+    auth.currentAccount = 'alice@example.com'
+    const store = useWatchlistStore()
+    await nextTick()
+    store.add({ channel_id: 'UC1', title: 'Alpha', thumbnail: 'a.jpg' })
+
+    const wrapper = mount(WatchlistPanel)
+    await wrapper.find('[aria-label="訂閱 Alpha"]').trigger('click')
+    await flushPromises()
+
+    const toast = wrapper.find('.watchlist-toast')
+    expect(toast.exists()).toBe(true)
+    expect(toast.text()).toContain('「Alpha」此帳號已訂閱')
+    // 非紅色錯誤
+    expect(toast.classes()).toContain('success')
+    expect(toast.classes()).not.toContain('error')
+    expect(toast.text()).not.toContain('訂閱失敗')
+    // 名單項保留、未發出 subscribed
+    expect(store.items).toHaveLength(1)
+    expect(wrapper.emitted('subscribed')).toBeUndefined()
+  })
+
+  it('shows the backend error without doubling the「訂閱失敗：」prefix on non-duplicate failure', async () => {
+    const { apiPost } = await import('@/api')
+    vi.mocked(apiPost).mockRejectedValue(new Error('訂閱失敗：quota 耗盡'))
+    const auth = useAuthStore()
+    auth.currentAccount = 'alice@example.com'
+    const store = useWatchlistStore()
+    await nextTick()
+    store.add({ channel_id: 'UC1', title: 'Alpha', thumbnail: 'a.jpg' })
+
+    const wrapper = mount(WatchlistPanel)
+    await wrapper.find('[aria-label="訂閱 Alpha"]').trigger('click')
+    await flushPromises()
+
+    const toast = wrapper.find('.watchlist-toast')
+    expect(toast.classes()).toContain('error')
+    expect(toast.text()).toBe('訂閱失敗：quota 耗盡')
+    expect(toast.text()).not.toContain('訂閱失敗：訂閱失敗：')
+    expect(store.items).toHaveLength(1)
   })
 
   it('filters rows by the search input', async () => {

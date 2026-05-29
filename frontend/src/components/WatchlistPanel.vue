@@ -8,9 +8,8 @@
       aria-label="搜尋觀察名單"
     />
 
-    <div v-if="!auth.currentAccount" class="watchlist-empty">請先登入</div>
-    <div v-else-if="watchlist.items.length === 0" class="watchlist-empty">
-      還沒加入任何頻道，從「🔍 同類新頻道」把感興趣的頻道加進來
+    <div v-if="watchlist.items.length === 0" class="watchlist-empty">
+      還沒加入任何頻道，從訂閱清單或「🔍 同類新頻道」把頻道加進來
     </div>
     <div v-else-if="filteredItems.length === 0" class="watchlist-empty">找不到符合的頻道</div>
 
@@ -36,9 +35,9 @@
         </button>
         <button
           class="icon-btn promote-watchlist-btn"
-          :disabled="pendingId === item.channel_id"
+          :disabled="pendingId === item.channel_id || isSubscribed(item.channel_id)"
           :aria-label="`訂閱 ${item.title}`"
-          title="訂閱"
+          :title="isSubscribed(item.channel_id) ? '已訂閱' : '訂閱'"
           @click.stop="promote(item.channel_id)"
         >
           ➕
@@ -52,16 +51,22 @@
 
 <script setup lang="ts">
 import { computed, ref } from 'vue'
-import { useAuthStore } from '@/stores/auth'
 import { useWatchlistStore, type PromotedChannel } from '@/stores/watchlist'
+
+const props = defineProps<{
+  subscribedIds?: Set<string>
+}>()
 
 const emit = defineEmits<{
   (e: 'select-channel', channelId: string): void
   (e: 'subscribed', channel: PromotedChannel): void
 }>()
 
-const auth = useAuthStore()
 const watchlist = useWatchlistStore()
+
+function isSubscribed(channelId: string): boolean {
+  return props.subscribedIds?.has(channelId) ?? false
+}
 const query = ref('')
 const pendingId = ref('')
 const toast = ref<{ text: string; type: 'success' | 'error' } | null>(null)
@@ -82,15 +87,20 @@ function showToast(text: string, type: 'success' | 'error') {
 }
 
 async function promote(channelId: string) {
-  if (pendingId.value) return
+  if (pendingId.value || isSubscribed(channelId)) return
+  const title = watchlist.items.find((i) => i.channel_id === channelId)?.title ?? channelId
   pendingId.value = channelId
   try {
     const result = await watchlist.promote(channelId)
     if (result.success) {
       showToast(`已訂閱：${result.channel.title}`, 'success')
       emit('subscribed', result.channel)
+    } else if ('duplicate' in result) {
+      // 已訂閱（YouTube 回報 subscriptionDuplicate）：中性提示、保留名單項、不重複加入訂閱清單。
+      showToast(`「${title}」此帳號已訂閱`, 'success')
     } else {
-      showToast(`訂閱失敗：${result.error}`, 'error')
+      // result.error 已含後端「訂閱失敗：」前綴，不再二次前綴。
+      showToast(result.error, 'error')
     }
   } finally {
     pendingId.value = ''

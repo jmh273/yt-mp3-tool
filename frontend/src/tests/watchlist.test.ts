@@ -52,7 +52,7 @@ describe('watchlistStore', () => {
     expect(store.items).toHaveLength(0)
   })
 
-  it('sorts items by added_at descending and persists to the current account key', async () => {
+  it('sorts items by added_at descending and persists to the shared key', async () => {
     vi.useFakeTimers()
     const auth = useAuthStore()
     auth.currentAccount = 'alice@example.com'
@@ -65,33 +65,46 @@ describe('watchlistStore', () => {
     store.add(channel('UC-new', 'New'))
 
     expect(store.items.map((item) => item.channel_id)).toEqual(['UC-new', 'UC-old'])
-    const stored = JSON.parse(localStorage.getItem('watchlist:alice@example.com') || '[]')
+    const stored = JSON.parse(localStorage.getItem('watchlist:shared') || '[]')
     expect(stored.map((item: { channel_id: string }) => item.channel_id)).toEqual(['UC-new', 'UC-old'])
+    expect(localStorage.getItem('watchlist:alice@example.com')).toBeNull()
   })
 
-  it('reloads the list when currentAccount changes and keeps empty account isolated', async () => {
-    localStorage.setItem('watchlist:alice@example.com', JSON.stringify([
-      { ...channel('UC-a', 'Alice'), added_at: '2026-05-26T01:00:00.000Z' },
-    ]))
-    localStorage.setItem('watchlist:bob@example.com', JSON.stringify([
-      { ...channel('UC-b', 'Bob'), added_at: '2026-05-26T02:00:00.000Z' },
-    ]))
-
+  it('shares one list across accounts; switching account does not change it', async () => {
     const auth = useAuthStore()
     auth.currentAccount = 'alice@example.com'
     const store = useWatchlistStore()
     await nextTick()
+
+    store.add(channel('UC-a', 'Alice'))
     expect(store.items.map((item) => item.channel_id)).toEqual(['UC-a'])
 
+    // 切到 B：名單不變（共用同一份）
     auth.currentAccount = 'bob@example.com'
     await nextTick()
-    expect(store.items.map((item) => item.channel_id)).toEqual(['UC-b'])
+    expect(store.items.map((item) => item.channel_id)).toEqual(['UC-a'])
 
-    auth.currentAccount = ''
+    // 在 B 加入後切回 A：仍看得到 B 加的項目
+    store.add(channel('UC-b', 'Bob'))
+    auth.currentAccount = 'alice@example.com'
     await nextTick()
-    store.add(channel('UC-empty', 'Empty'))
-    expect(store.items).toEqual([])
-    expect(localStorage.getItem('watchlist:')).toBeNull()
+    expect(store.items.map((item) => item.channel_id).sort()).toEqual(['UC-a', 'UC-b'])
+
+    const stored = JSON.parse(localStorage.getItem('watchlist:shared') || '[]')
+    expect(stored).toHaveLength(2)
+  })
+
+  it('add() works when not logged in (no login gate) and persists to shared key', async () => {
+    const auth = useAuthStore()
+    auth.currentAccount = ''
+    const store = useWatchlistStore()
+    await nextTick()
+
+    store.add(channel('UC-anon', 'Anon'))
+
+    expect(store.items.map((item) => item.channel_id)).toEqual(['UC-anon'])
+    const stored = JSON.parse(localStorage.getItem('watchlist:shared') || '[]')
+    expect(stored.map((item: { channel_id: string }) => item.channel_id)).toEqual(['UC-anon'])
   })
 
   it('promotes a channel successfully by posting to subscriptions and removing the item', async () => {
@@ -134,5 +147,24 @@ describe('watchlistStore', () => {
 
     expect(result).toEqual({ success: false, error: 'quota exhausted' })
     expect(store.items).toHaveLength(1)
+  })
+
+  it('treats subscriptionDuplicate as a non-error and keeps the item', async () => {
+    const { apiPost } = await import('@/api')
+    vi.mocked(apiPost).mockRejectedValue(
+      new Error('訂閱失敗：<HttpError 400 ... returned "The subscription that you are trying to create already exists." reason: subscriptionDuplicate>'),
+    )
+    const auth = useAuthStore()
+    auth.currentAccount = 'alice@example.com'
+    const store = useWatchlistStore()
+    await nextTick()
+    store.add(channel('UC1', 'Alpha'))
+
+    const result = await store.promote('UC1')
+
+    expect(result).toEqual({ success: false, duplicate: true })
+    // 保留名單項（不自動移除）
+    expect(store.items).toHaveLength(1)
+    expect(store.has('UC1')).toBe(true)
   })
 })
