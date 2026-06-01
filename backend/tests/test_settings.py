@@ -13,6 +13,7 @@ def test_load_settings_defaults():
     s = main.load_settings()
     assert s["videos_per_channel"] == 5
     assert "YT-MP3" in s["output_path"]
+    assert s["drive_root_folder"] == "YT-MP3"
 
 
 def test_load_settings_merges_file(tmp_path):
@@ -33,6 +34,7 @@ async def test_get_settings_defaults(client):
     data = r.json()
     assert data["videos_per_channel"] == 5
     assert "output_path" in data
+    assert data["drive_root_folder"] == "YT-MP3"
 
 
 # ── PUT /settings ─────────────────────────────────────────────────────────────
@@ -70,6 +72,21 @@ async def test_put_settings_persisted(client):
         await c.put("/settings", json={"videos_per_channel": 3})
         r = await c.get("/settings")
     assert r.json()["videos_per_channel"] == 3
+
+
+async def test_put_settings_drive_root_folder(client):
+    async with client as c:
+        r = await c.put("/settings", json={"drive_root_folder": "音樂庫"})
+        r2 = await c.get("/settings")
+    assert r.status_code == 200
+    assert r.json()["drive_root_folder"] == "音樂庫"
+    assert r2.json()["drive_root_folder"] == "音樂庫"
+
+
+async def test_put_settings_rejects_blank_drive_root_folder(client):
+    async with client as c:
+        r = await c.put("/settings", json={"drive_root_folder": "   "})
+    assert r.status_code == 422
 
 
 async def test_put_settings_latest_hours_valid(client):

@@ -15,6 +15,10 @@ const FAKE_SETTINGS = {
   output_path: 'C:\\Users\\Test\\Music\\YT-MP3',
   videos_per_channel: 5,
   latest_hours: 24,
+  min_duration_minutes: 3,
+  max_duration_minutes: 60,
+  normalize_target_db: 89,
+  drive_root_folder: 'YT-MP3',
 }
 
 describe('SettingsView', () => {
@@ -143,5 +147,23 @@ describe('SettingsView', () => {
 
     expect(wrapper.find('button').text()).toContain('儲存中')
     expect(wrapper.find('button').attributes('disabled')).toBeDefined()
+  })
+  it('shows and saves Drive root folder', async () => {
+    const { apiGet, apiPut } = await import('@/api')
+    vi.mocked(apiGet).mockResolvedValue(FAKE_SETTINGS)
+    vi.mocked(apiPut).mockResolvedValue({ ...FAKE_SETTINGS, drive_root_folder: 'MusicDrive' })
+
+    const wrapper = mount(SettingsView)
+    await flushPromises()
+
+    const driveInput = wrapper.find('[data-testid="drive-root-folder"]')
+    expect((driveInput.element as HTMLInputElement).value).toBe('YT-MP3')
+    await driveInput.setValue('MusicDrive')
+    await wrapper.find('button').trigger('click')
+    await flushPromises()
+
+    expect(apiPut).toHaveBeenCalledWith('/settings', expect.objectContaining({
+      drive_root_folder: 'MusicDrive',
+    }))
   })
 })

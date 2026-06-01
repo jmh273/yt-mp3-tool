@@ -96,12 +96,16 @@
 </template>
 
 <script setup lang="ts">
-import { computed, onMounted, ref } from 'vue'
+import { computed, onMounted, ref, watch } from 'vue'
 import { apiGet } from '@/api'
 import { useNormalizeStore, type NormalizeProgressItem } from '@/stores/normalize'
+import { useDownloadStore } from '@/stores/download'
 
 const store = useNormalizeStore()
+const download = useDownloadStore()
 const dirInput = ref('')
+const outputPath = ref('')
+const dirEdited = ref(false)
 
 function todayYyyymmdd(): string {
   const d = new Date()
@@ -118,20 +122,38 @@ function joinPath(base: string, sub: string): string {
   return `${trimmed}${sep}${sub}`
 }
 
+function defaultDir(): string {
+  return download.targetDirPath || joinPath(outputPath.value, todayYyyymmdd())
+}
+
 onMounted(async () => {
   if (store.directory) {
     dirInput.value = store.directory
+    dirEdited.value = true
     return
   }
   try {
     const s = await apiGet<{ output_path: string; normalize_target_db: number }>('/settings')
-    dirInput.value = joinPath(s.output_path, todayYyyymmdd())
+    outputPath.value = s.output_path
     if (s.normalize_target_db != null) {
       store.targetDb = s.normalize_target_db
     }
   } catch {
     // 略過 — 使用者仍可手動輸入
   }
+  if (!dirEdited.value && !store.directory) dirInput.value = defaultDir()
+})
+
+// 下載分頁修改目標路徑時，未手動編輯且尚未載入目錄前一併同步預設值
+watch(
+  () => download.targetDirPath,
+  () => {
+    if (!dirEdited.value && !store.directory) dirInput.value = defaultDir()
+  },
+)
+
+watch(dirInput, (v) => {
+  if (v !== defaultDir()) dirEdited.value = true
 })
 
 async function onLoad() {

@@ -18,6 +18,8 @@ from google.auth.transport.requests import Request as GoogleRequest
 from google.oauth2.credentials import Credentials
 from google_auth_oauthlib.flow import InstalledAppFlow
 from googleapiclient.discovery import build
+from googleapiclient.errors import HttpError
+from googleapiclient.http import MediaFileUpload
 from pydantic import BaseModel, Field
 
 
@@ -77,9 +79,11 @@ DISCOVERY_PROFILES_DIR = CONFIG_DIR / "discovery_profiles"  # 同類新頻道 pr
 
 SCOPES = [
     "https://www.googleapis.com/auth/youtube",
+    "https://www.googleapis.com/auth/drive.file",
     "https://www.googleapis.com/auth/userinfo.email",
     "openid",
 ]
+DRIVE_FILE_SCOPE = "https://www.googleapis.com/auth/drive.file"
 REDIRECT_URI = "http://localhost:8000/auth/callback"
 
 DEFAULT_SETTINGS = {
@@ -89,6 +93,7 @@ DEFAULT_SETTINGS = {
     "min_duration_minutes": 3,
     "max_duration_minutes": 60,
     "normalize_target_db": 89.0,
+    "drive_root_folder": "YT-MP3",
     "quota_used": 0,
     "quota_date": "",
 }
@@ -153,6 +158,9 @@ download_progress: dict[str, dict] = {}
 # ── 音量正規化進度與目錄鎖（全域） ────────────────────────────────────────────────
 normalize_progress: dict[str, dict] = {}
 _active_normalize_dirs: set[str] = set()
+
+# Google Drive upload progress, keyed by task id.
+drive_upload_progress: dict[str, dict] = {}
 
 
 # ── 工具函式 ───────────────────────────────────────────────────────────────────
@@ -269,6 +277,7 @@ _SETTINGS_RANGES = {
     "max_duration_minutes": (int, 1, 10000),
     "normalize_target_db": ((int, float), 80.0, 100.0),
     "output_path": (str, None, None),
+    "drive_root_folder": (str, None, None),
 }
 
 
@@ -289,13 +298,16 @@ def load_settings() -> dict:
         if not isinstance(value, expected_type):
             merged[key] = DEFAULT_SETTINGS[key]
             continue
+        if key == "drive_root_folder" and not value.strip():
+            merged[key] = DEFAULT_SETTINGS[key]
+            continue
         if lo is not None and hi is not None and not (lo <= value <= hi):
             merged[key] = DEFAULT_SETTINGS[key]
     return merged
 
 
 def save_settings(data: dict):
-    SETTINGS_FILE.write_text(json.dumps(data, ensure_ascii=False, indent=2))
+    SETTINGS_FILE.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
 
 
 def _current_pt_date() -> str:
@@ -438,6 +450,42 @@ def require_credentials() -> Credentials:
 
 
 # ── Auth 路由 ──────────────────────────────────────────────────────────────────
+def _credential_has_scope(creds: Credentials, scope: str) -> bool:
+    granted = set(getattr(creds, "scopes", None) or getattr(creds, "granted_scopes", None) or [])
+    return scope in granted
+
+
+def load_drive_credentials() -> Credentials | None:
+    email = _get_current_email()
+    if not email:
+        return None
+    token_file = _token_path(email)
+    if not token_file.exists():
+        return None
+    creds = Credentials.from_authorized_user_file(str(token_file))
+    # 缺 drive.file scope：回 None 觸發 401，由前端引導重新授權。
+    # 不要動既有 token——它與 YouTube 共用，刪掉會把使用者整個登出。
+    if not _credential_has_scope(creds, DRIVE_FILE_SCOPE):
+        return None
+    if creds and creds.expired and creds.refresh_token:
+        try:
+            creds.refresh(GoogleRequest())
+            token_file.write_text(creds.to_json(), encoding="utf-8")
+        except RefreshError:
+            return None
+    return creds if creds and creds.valid else None
+
+
+def require_drive_credentials() -> Credentials:
+    creds = load_drive_credentials()
+    if not creds:
+        raise HTTPException(
+            status_code=401,
+            detail="Drive upload needs one-time Google reauthorization with drive.file scope.",
+        )
+    return creds
+
+
 @app.get("/auth/status")
 def auth_status():
     creds = load_credentials()
@@ -869,6 +917,7 @@ class SettingsUpdate(BaseModel):
     min_duration_minutes: int | None = None
     max_duration_minutes: int | None = None
     normalize_target_db: float | None = None
+    drive_root_folder: str | None = None
 
 
 @app.put("/settings")
@@ -892,6 +941,11 @@ def update_settings(body: SettingsUpdate):
         if not (80.0 <= body.normalize_target_db <= 100.0):
             raise HTTPException(status_code=422, detail="normalize_target_db 必須介於 80.0 到 100.0 之間（dB SPL）")
         settings["normalize_target_db"] = body.normalize_target_db
+    if body.drive_root_folder is not None:
+        folder = body.drive_root_folder.strip()
+        if not folder:
+            raise HTTPException(status_code=422, detail="drive_root_folder must not be blank")
+        settings["drive_root_folder"] = folder
     save_settings(settings)
     return settings
 
@@ -1919,6 +1973,7 @@ class DownloadRequest(BaseModel):
     quality: int = 192    # mp3: kbps; mp4: p
     seq_enabled: bool = True
     start_seq: str | None = Field(default=None, pattern=r"^\d{1,10}$")
+    target_dir: str | None = None
 
 
 _MP3_QUALITIES = (128, 192, 256, 320)
@@ -1942,6 +1997,20 @@ def _today_download_dir() -> pathlib.Path:
     from datetime import datetime
     settings = load_settings()
     return pathlib.Path(settings.get("output_path", "")) / datetime.now().strftime("%Y%m%d")
+
+
+def _resolve_output_child(output_path: str, child: str | None) -> pathlib.Path:
+    from datetime import datetime
+    base = pathlib.Path(output_path).resolve()
+    name = child if child is not None and child.strip() else datetime.now().strftime("%Y%m%d")
+    if "/" in name or "\\" in name or name in ("", ".", ".."):
+        raise HTTPException(status_code=400, detail="target_dir must be a child folder name")
+    target = (base / _sanitize_filename(name)).resolve()
+    try:
+        target.relative_to(base)
+    except ValueError:
+        raise HTTPException(status_code=400, detail="target_dir escapes output_path")
+    return target
 
 
 def _today_downloaded_stems() -> set[str]:
@@ -2116,15 +2185,13 @@ def run_download(
 
 @app.post("/download")
 async def start_download(body: DownloadRequest):
-    from datetime import datetime
     settings = load_settings()
     output_path = settings["output_path"]
     
     # 建立日期子目錄 YYYYMMDD
-    date_str = datetime.now().strftime("%Y%m%d")
-    final_output_path = os.path.join(output_path, date_str)
+    final_output_path = _resolve_output_child(output_path, body.target_dir)
     
-    pathlib.Path(final_output_path).mkdir(parents=True, exist_ok=True)
+    final_output_path.mkdir(parents=True, exist_ok=True)
 
     import uuid
     task_id = str(uuid.uuid4())
@@ -2136,7 +2203,7 @@ async def start_download(body: DownloadRequest):
         None,
         run_download,
         body.videos,
-        final_output_path,
+        str(final_output_path),
         task_id,
         fmt,
         quality,
@@ -2426,6 +2493,203 @@ async def normalize_progress_sse(task_id: str):
 
 
 # ── Version endpoint ──────────────────────────────────────────────────────────
+class DriveUploadRequest(BaseModel):
+    directory: str
+
+
+def _drive_error_detail(e: Exception) -> str:
+    """把 Drive API 例外轉成給使用者看的繁中訊息（特別處理「API 未啟用」）。"""
+    text = str(e)
+    if isinstance(e, HttpError):
+        reason = ""
+        try:
+            if e.error_details:
+                reason = e.error_details[0].get("reason", "")
+        except Exception:
+            pass
+        if reason == "accessNotConfigured" or "has not been used in project" in text:
+            return (
+                "Google Drive API 尚未在此 Google Cloud 專案啟用。"
+                "請到 Google Cloud Console 啟用 Drive API（drive.googleapis.com），"
+                "等幾分鐘後再試。"
+            )
+        return f"Google Drive API 錯誤：{text}"
+    return text
+
+
+def _drive_quote(value: str) -> str:
+    return value.replace("\\", "\\\\").replace("'", "\\'")
+
+
+def _drive_folder_query(name: str, parent_id: str | None) -> str:
+    parent_clause = f"'{_drive_quote(parent_id)}' in parents" if parent_id else "'root' in parents"
+    return (
+        f"name='{_drive_quote(name)}' and "
+        "mimeType='application/vnd.google-apps.folder' and "
+        f"{parent_clause} and trashed=false"
+    )
+
+
+def _ensure_drive_folder(service, name: str, parent_id: str | None) -> str:
+    files_api = service.files()
+    result = files_api.list(
+        q=_drive_folder_query(name, parent_id),
+        fields="files(id,name)",
+        spaces="drive",
+    ).execute()
+    matches = result.get("files", [])
+    if matches:
+        return matches[0]["id"]
+    body = {"name": name, "mimeType": "application/vnd.google-apps.folder"}
+    if parent_id:
+        body["parents"] = [parent_id]
+    created = files_api.create(body=body, fields="id").execute()
+    return created["id"]
+
+
+def _drive_file_names(service, parent_id: str) -> set[str]:
+    result = service.files().list(
+        q=f"'{_drive_quote(parent_id)}' in parents and trashed=false",
+        fields="files(name)",
+        spaces="drive",
+    ).execute()
+    return {item["name"] for item in result.get("files", []) if item.get("name")}
+
+
+def _local_mp3_files(directory: pathlib.Path) -> list[pathlib.Path]:
+    return sorted(p for p in directory.iterdir() if p.is_file() and p.suffix.lower() == ".mp3")
+
+
+def run_drive_upload_batch(task_id: str, directory: pathlib.Path, service, root_folder: str):
+    state = drive_upload_progress.setdefault(task_id, {
+        "status": "running",
+        "directory": str(directory),
+        "items": {
+            p.name: {"filename": p.name, "status": "pending", "error": None}
+            for p in _local_mp3_files(directory)
+        },
+    })
+    try:
+        root_id = _ensure_drive_folder(service, root_folder, None)
+        leaf_id = _ensure_drive_folder(service, directory.name, root_id)
+        existing = _drive_file_names(service, leaf_id)
+        for file_path in _local_mp3_files(directory):
+            item = state["items"][file_path.name]
+            if file_path.name in existing:
+                item["status"] = "skipped"
+                continue
+            item["status"] = "uploading"
+            try:
+                media = MediaFileUpload(str(file_path), mimetype="audio/mpeg", resumable=False)
+                service.files().create(
+                    body={"name": file_path.name, "parents": [leaf_id]},
+                    media_body=media,
+                    fields="id",
+                ).execute()
+                item["status"] = "done"
+            except Exception as e:
+                item["status"] = "error"
+                item["error"] = _drive_error_detail(e)
+        state["status"] = "done"
+    except Exception as e:
+        detail = _drive_error_detail(e)
+        state["status"] = "done"
+        state["error"] = detail
+        for item in state["items"].values():
+            if item["status"] in ("pending", "uploading"):
+                item["status"] = "error"
+                item["error"] = detail
+
+
+def _resolve_upload_directory(directory: str, output_path: str) -> pathlib.Path:
+    base = pathlib.Path(output_path).resolve()
+    target = pathlib.Path(directory).resolve()
+    try:
+        target.relative_to(base)
+    except ValueError:
+        raise HTTPException(status_code=400, detail="directory must be under output_path")
+    if not target.is_dir():
+        raise HTTPException(status_code=400, detail="directory does not exist")
+    return target
+
+
+def _build_drive_service():
+    creds = require_drive_credentials()
+    return build("drive", "v3", credentials=creds)
+
+
+@app.post("/drive/upload")
+async def drive_upload_start(body: DriveUploadRequest):
+    settings = load_settings()
+    directory = _resolve_upload_directory(body.directory, settings["output_path"])
+    files = _local_mp3_files(directory)
+    import uuid
+    task_id = str(uuid.uuid4())
+    drive_upload_progress[task_id] = {
+        "status": "running",
+        "directory": str(directory),
+        "items": {p.name: {"filename": p.name, "status": "pending", "error": None} for p in files},
+    }
+    service = _build_drive_service()
+    root_folder = settings.get("drive_root_folder", "YT-MP3") or "YT-MP3"
+    loop = asyncio.get_event_loop()
+    loop.run_in_executor(None, run_drive_upload_batch, task_id, directory, service, root_folder)
+    return {"task_id": task_id}
+
+
+@app.get("/drive/upload/progress/{task_id}")
+async def drive_upload_progress_sse(task_id: str):
+    async def event_stream() -> AsyncGenerator[str, None]:
+        while True:
+            state = drive_upload_progress.get(task_id)
+            if state is None:
+                yield f"data: {json.dumps({'error': 'task not found'})}\n\n"
+                break
+            yield f"data: {json.dumps(state)}\n\n"
+            if state.get("status") == "done":
+                break
+            await asyncio.sleep(0.5)
+
+    return StreamingResponse(event_stream(), media_type="text/event-stream")
+
+
+def _collect_upload_folders(settings: dict) -> list[dict]:
+    """列 output_path 下各批資料夾並標記是否已全數上傳。含 Drive 同步 I/O，須在 executor 跑。"""
+    output = pathlib.Path(settings["output_path"]).resolve()
+    if not output.is_dir():
+        return []
+    service = _build_drive_service()
+    root_folder = settings.get("drive_root_folder", "YT-MP3") or "YT-MP3"
+    root_id = _ensure_drive_folder(service, root_folder, None)
+    folders = []
+    for folder in sorted((p for p in output.iterdir() if p.is_dir()), key=lambda p: p.name, reverse=True):
+        local_names = {p.name for p in _local_mp3_files(folder)}
+        uploaded = False
+        if local_names:
+            result = service.files().list(
+                q=_drive_folder_query(folder.name, root_id),
+                fields="files(id,name)",
+                spaces="drive",
+            ).execute()
+            matches = result.get("files", [])
+            if matches:
+                remote_names = _drive_file_names(service, matches[0]["id"])
+                uploaded = local_names.issubset(remote_names)
+        folders.append({"name": folder.name, "directory": str(folder), "uploaded": uploaded})
+    return folders
+
+
+@app.get("/drive/upload/folders")
+async def drive_upload_folders():
+    settings = load_settings()
+    loop = asyncio.get_event_loop()
+    try:
+        folders = await loop.run_in_executor(None, _collect_upload_folders, settings)
+    except HttpError as e:
+        raise HTTPException(status_code=502, detail=_drive_error_detail(e))
+    return {"folders": folders}
+
+
 @app.get("/version")
 def version():
     return {"version": __version__}

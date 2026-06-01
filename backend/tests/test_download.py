@@ -1,6 +1,8 @@
 """下載功能測試"""
 import json
+import pathlib
 import time
+import asyncio
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -399,6 +401,64 @@ async def test_post_download_default_seq_fields(client):
     else:
         assert args["seq_enabled"] is True
         assert args["start_seq"] is None
+
+
+async def test_post_download_uses_target_dir_under_output_path(client, tmp_path):
+    """target_dir overrides today's folder but stays under output_path."""
+    with patch("main.load_settings", return_value={"output_path": str(tmp_path)}), \
+         patch("main.run_download") as mock_run:
+        async with client as c:
+            r = await c.post(
+                "/download",
+                json={"videos": SAMPLE_VIDEOS, "target_dir": "20260601_sports"},
+            )
+
+    assert r.status_code == 200
+    args = mock_run.call_args.args
+    assert pathlib.Path(args[1]) == tmp_path / "20260601_sports"
+    assert (tmp_path / "20260601_sports").is_dir()
+
+
+async def test_post_download_rejects_target_dir_path_traversal(client, tmp_path):
+    with patch("main.load_settings", return_value={"output_path": str(tmp_path)}), \
+         patch("main.run_download") as mock_run:
+        async with client as c:
+            r = await c.post(
+                "/download",
+                json={"videos": SAMPLE_VIDEOS, "target_dir": "..\\outside"},
+            )
+
+    assert r.status_code == 400
+    mock_run.assert_not_called()
+
+
+async def test_post_download_target_dir_has_independent_sequence_base(client, tmp_path):
+    (tmp_path / "20260601").mkdir()
+    (tmp_path / "20260601" / "99_old.mp3").write_bytes(b"x")
+    (tmp_path / "20260601_evening").mkdir()
+    captured: list[str] = []
+    original_run_download = main.run_download
+
+    def fake_run(videos, output_path, task_id, *args):
+        def fake_ydl_init(opts):
+            captured.append(opts["outtmpl"])
+            return MagicMock(__enter__=MagicMock(return_value=MagicMock(download=MagicMock())),
+                             __exit__=MagicMock(return_value=False))
+
+        with patch("yt_dlp.YoutubeDL", side_effect=fake_ydl_init):
+            original_run_download(videos, output_path, task_id)
+
+    with patch("main.load_settings", return_value={"output_path": str(tmp_path)}), \
+         patch("main.run_download", side_effect=fake_run):
+        async with client as c:
+            r = await c.post(
+                "/download",
+                json={"videos": SAMPLE_VIDEOS, "target_dir": "20260601_evening"},
+            )
+
+    assert r.status_code == 200
+    await asyncio.sleep(0.05)
+    assert captured[0].endswith("01_Test Song.%(ext)s")
 
 
 # ── GET /download/next-seq ────────────────────────────────────────────────────

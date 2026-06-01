@@ -1,7 +1,8 @@
 <template>
-  <div class="selected-panel" v-if="download.selected.length > 0 || download.downloading">
+  <div class="selected-panel" v-if="download.selected.length > 0 || download.downloading || Object.keys(download.progress).length > 0">
     <div class="header">
       <span>已選取 {{ download.selected.length }} 支影片</span>
+
       <div class="format-row">
         <label class="field">
           <span class="field-label">格式</span>
@@ -22,11 +23,7 @@
 
       <div class="seq-row">
         <label class="seq-checkbox-label">
-          <input
-            type="checkbox"
-            v-model="seqEnabled"
-            :disabled="download.downloading"
-          />
+          <input type="checkbox" v-model="seqEnabled" :disabled="download.downloading" />
           <span>加流水號</span>
         </label>
         <label class="field" v-if="seqEnabled">
@@ -46,6 +43,17 @@
         ⚠️ 與既有 {{ seqConflict.map(formatPad).join('、') }} 重複
       </p>
 
+      <label class="field">
+        <span class="field-label">下載到</span>
+        <input
+          data-testid="download-target-dir"
+          class="target-folder-input"
+          type="text"
+          v-model="download.targetDirPath"
+          :disabled="download.downloading"
+        />
+      </label>
+
       <div class="actions">
         <button class="clear" @click="download.clearAll" :disabled="download.downloading">清除全部</button>
         <button
@@ -62,21 +70,19 @@
       <div v-for="(item, vid) in download.progress" :key="vid" class="progress-item">
         <span class="ptitle" :title="item.title">{{ item.title }}</span>
         <div class="bar-wrap">
-          <div
-            class="bar"
-            :style="{ width: item.percent + '%' }"
-            :class="item.status"
-          />
+          <div class="bar" :style="{ width: item.percent + '%' }" :class="item.status" />
         </div>
         <span class="pstatus">
           {{ statusLabel(item.status) }}
-          <span v-if="item.status === 'downloading'">{{ item.percent }}% <span v-if="item.speed">({{ item.speed }})</span></span>
+          <span v-if="item.status === 'downloading'">
+            {{ item.percent }}% <span v-if="item.speed">({{ item.speed }})</span>
+          </span>
         </span>
       </div>
     </div>
 
     <div v-if="doneCount > 0 && !download.downloading" class="summary">
-      下載完成！共 {{ doneCount }} 支 <span v-if="errorCount > 0">，{{ errorCount }} 支失敗</span>
+      下載完成！共 {{ doneCount }} 支<span v-if="errorCount > 0">，{{ errorCount }} 支失敗</span>
     </div>
   </div>
 </template>
@@ -97,7 +103,6 @@ const FORMAT_DEFAULTS: Record<DownloadFormat, number> = { mp3: 192, mp4: 720 }
 
 const format = ref<DownloadFormat>('mp3')
 const quality = ref<number>(FORMAT_DEFAULTS.mp3)
-
 watch(format, (f) => {
   quality.value = FORMAT_DEFAULTS[f]
 })
@@ -108,9 +113,9 @@ watch(seqEnabled, (v) => {
   localStorage.setItem(SEQ_STORAGE_KEY, String(v))
 })
 
-const startSeqInput = ref<string>('')
+const startSeqInput = ref('')
 const existingSeqs = ref<number[]>([])
-
+const outputPath = ref('')
 const START_SEQ_RE = /^\d{1,10}$/
 
 const startSeqInvalid = computed(
@@ -127,6 +132,20 @@ const seqConflict = computed<number[]>(() => {
   return existingSeqs.value.filter((n) => range.has(n))
 })
 
+function todayYyyymmdd(): string {
+  const d = new Date()
+  const y = d.getFullYear()
+  const m = String(d.getMonth() + 1).padStart(2, '0')
+  const day = String(d.getDate()).padStart(2, '0')
+  return `${y}${m}${day}`
+}
+
+function joinPath(base: string, sub: string): string {
+  if (!base) return sub
+  const sep = base.includes('\\') ? '\\' : '/'
+  return `${base.replace(/[\\/]+$/, '')}${sep}${sub}`
+}
+
 function formatPad(n: number): string {
   const width = Math.max(startSeqInput.value.length || 2, String(n).length)
   return String(n).padStart(width, '0')
@@ -138,11 +157,28 @@ async function fetchNextSeq() {
     startSeqInput.value = data.next_seq
     existingSeqs.value = data.existing ?? []
   } catch {
-    // 401 / network error: silently leave inputs untouched
+    // 401 / network error: leave inputs untouched
+  }
+}
+
+function basename(path: string): string {
+  return path.replace(/[\\/]+$/, '').split(/[\\/]/).pop() ?? ''
+}
+
+async function loadSettings() {
+  try {
+    const s = await apiGet<{ output_path: string }>('/settings')
+    outputPath.value = s.output_path
+  } catch {
+    // ignore
+  }
+  if (!download.targetDirPath) {
+    download.targetDirPath = joinPath(outputPath.value, download.lastWorkDirName || todayYyyymmdd())
   }
 }
 
 onMounted(() => {
+  loadSettings()
   if (download.selected.length > 0) fetchNextSeq()
 })
 
@@ -164,6 +200,7 @@ function onDownload() {
   download.startDownload(format.value, quality.value, {
     seqEnabled: seqEnabled.value,
     startSeq: seqEnabled.value ? startSeqInput.value : null,
+    targetDir: basename(download.targetDirPath),
   })
 }
 
@@ -186,57 +223,24 @@ function statusLabel(status: string) {
 .header { display: flex; flex-direction: column; gap: 0.8rem; align-items: flex-start; margin-bottom: 1rem; border-bottom: 1px solid #ddd; padding-bottom: 0.8rem; }
 .header > span { font-weight: bold; font-size: 1.1rem; }
 .format-row { display: flex; gap: 0.5rem; width: 100%; }
-.field { display: flex; flex-direction: column; gap: 0.2rem; flex: 1; min-width: 0; }
+.field { display: flex; flex-direction: column; gap: 0.2rem; flex: 1; min-width: 0; width: 100%; }
 .field-label { font-size: 0.72rem; color: #888; font-weight: normal; }
-.format-select, .quality-select {
+.format-select, .quality-select, .target-folder-input {
   padding: 0.35rem 0.4rem;
   font-size: 0.85rem;
   border: 1px solid #ccc;
   border-radius: 4px;
   background: #fff;
-  cursor: pointer;
 }
-.format-select:disabled, .quality-select:disabled { opacity: 0.5; cursor: not-allowed; background: #f5f5f5; }
-
-.seq-row {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: flex-end;
-  gap: 0.6rem;
-  width: 100%;
-}
-.seq-checkbox-label {
-  display: inline-flex;
-  align-items: center;
-  gap: 0.35rem;
-  font-size: 0.85rem;
-  cursor: pointer;
-  padding-bottom: 0.35rem;
-}
-.seq-checkbox-label input[type='checkbox'] { cursor: pointer; }
-.start-seq-input {
-  width: 5rem;
-  padding: 0.35rem 0.4rem;
-  font-size: 0.85rem;
-  border: 1px solid #ccc;
-  border-radius: 4px;
-  background: #fff;
-  text-align: center;
-  font-variant-numeric: tabular-nums;
-}
-.start-seq-input:disabled { opacity: 0.5; cursor: not-allowed; background: #f5f5f5; }
-.seq-warn {
-  margin: 0;
-  font-size: 0.78rem;
-  color: #d97706;
-  align-self: stretch;
-}
-
+.format-select:disabled, .quality-select:disabled, .target-folder-input:disabled { opacity: 0.5; cursor: not-allowed; background: #f5f5f5; }
+.seq-row { display: flex; flex-wrap: wrap; align-items: flex-end; gap: 0.6rem; width: 100%; }
+.seq-checkbox-label { display: inline-flex; align-items: center; gap: 0.35rem; font-size: 0.85rem; cursor: pointer; padding-bottom: 0.35rem; }
+.start-seq-input { width: 5rem; padding: 0.35rem 0.4rem; font-size: 0.85rem; border: 1px solid #ccc; border-radius: 4px; text-align: center; font-variant-numeric: tabular-nums; }
+.seq-warn { margin: 0; font-size: 0.78rem; color: #d97706; align-self: stretch; }
 .actions { display: flex; gap: 0.5rem; width: 100%; }
 .clear { flex: 1; background: transparent; border: 1px solid #888; color: #555; padding: 0.4rem; border-radius: 4px; cursor: pointer; font-size: 0.85rem; }
 .dl { flex: 2; background: #ff0000; border: none; color: white; padding: 0.4rem; border-radius: 4px; cursor: pointer; font-size: 0.85rem; font-weight: bold; }
 button:disabled { opacity: 0.5; cursor: not-allowed; }
-
 .progress-list { display: flex; flex-direction: column; gap: 1rem; }
 .progress-item { display: flex; flex-direction: column; gap: 0.3rem; font-size: 0.85rem; }
 .ptitle { width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-weight: 500; }

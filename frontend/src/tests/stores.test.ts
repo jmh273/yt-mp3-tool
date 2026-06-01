@@ -2,6 +2,7 @@ import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { setActivePinia, createPinia } from 'pinia'
 import { useAuthStore } from '@/stores/auth'
 import { useDownloadStore } from '@/stores/download'
+import { useDriveUploadStore } from '@/stores/driveUpload'
 
 vi.mock('@/api', () => ({
   API_BASE: '/api',
@@ -77,6 +78,71 @@ describe('authStore', () => {
     const auth = useAuthStore()
     await auth.login()
     expect(apiGet).toHaveBeenCalledWith('/auth/login')
+  })
+})
+
+describe('downloadStore target folders', () => {
+  beforeEach(() => {
+    setActivePinia(createPinia())
+  })
+
+  it('startDownload includes target_dir when provided', async () => {
+    const { apiPost } = await import('@/api')
+    vi.mocked(apiPost).mockResolvedValue({ task_id: 't' })
+    const { Ctor } = makeEventSourceMock()
+    vi.stubGlobal('EventSource', Ctor)
+
+    const store = useDownloadStore()
+    store.toggle(FAKE_VIDEO)
+    await store.startDownload('mp3', 192, { targetDir: '20260601_sports' })
+
+    expect(apiPost).toHaveBeenCalledWith('/download', expect.objectContaining({
+      target_dir: '20260601_sports',
+    }))
+    expect(store.lastWorkDirName).toBe('20260601_sports')
+  })
+})
+
+describe('driveUploadStore', () => {
+  beforeEach(() => {
+    setActivePinia(createPinia())
+  })
+
+  it('loads upload folders and starts upload progress SSE', async () => {
+    const { apiGet, apiPost } = await import('@/api')
+    vi.mocked(apiGet).mockResolvedValue({
+      folders: [{ name: '20260601_sports', directory: 'C:/out/20260601_sports', uploaded: true }],
+    })
+    vi.mocked(apiPost).mockResolvedValue({ task_id: 'drive-task' })
+    const { Ctor } = makeEventSourceMock()
+    vi.stubGlobal('EventSource', Ctor)
+
+    const store = useDriveUploadStore()
+    await store.loadFolders()
+    expect(store.folders[0].uploaded).toBe(true)
+
+    await store.startUpload('C:/out/20260601_sports')
+    expect(apiPost).toHaveBeenCalledWith('/drive/upload', { directory: 'C:/out/20260601_sports' })
+    const esInstance = Ctor.mock.instances[0]
+    esInstance.onmessage({
+      data: JSON.stringify({
+        status: 'done',
+        items: { '01_song.mp3': { filename: '01_song.mp3', status: 'done', error: null } },
+      }),
+    })
+    expect(store.progress['01_song.mp3'].status).toBe('done')
+    expect(store.status).toBe('done')
+  })
+
+  it('surfaces one-time reauthorization guidance on 401', async () => {
+    const { apiPost } = await import('@/api')
+    vi.mocked(apiPost).mockRejectedValue(new Error('401 Drive upload needs one-time Google reauthorization'))
+    const store = useDriveUploadStore()
+
+    await store.startUpload('C:/out/20260601')
+
+    expect(store.reauthRequired).toBe(true)
+    expect(store.error).toContain('重新授權')
   })
 })
 

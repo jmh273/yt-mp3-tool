@@ -46,6 +46,11 @@
         <small class="hint">89 = mp3gain 預設；接近 YouTube 響度建議 92–93</small>
         <span v-if="normalizeTargetDbError" class="field-error">{{ normalizeTargetDbError }}</span>
       </label>
+      <label>
+        Drive 根目錄
+        <input data-testid="drive-root-folder" v-model="driveRootFolder" type="text" placeholder="YT-MP3" />
+        <small class="hint">上傳時各批資料夾會鏡像到此 Drive 資料夾下。舊檔不會自動清理；請勿在 Drive 手動先建此資料夾（交由程式建立）。</small>
+      </label>
       <button @click="save" :disabled="saving || !!latestHoursError || !!normalizeTargetDbError">
         {{ saving ? '儲存中...' : '儲存' }}
       </button>
@@ -65,6 +70,7 @@ const latestHours = ref(24)
 const minDuration = ref(3)
 const maxDuration = ref(60)
 const normalizeTargetDb = ref(89)
+const driveRootFolder = ref('YT-MP3')
 const latestHoursError = ref('')
 const normalizeTargetDbError = ref('')
 const saving = ref(false)
@@ -79,6 +85,7 @@ onMounted(async () => {
     min_duration_minutes: number
     max_duration_minutes: number
     normalize_target_db: number
+    drive_root_folder: string
   }>('/settings')
   outputPath.value = data.output_path
   videosPerChannel.value = data.videos_per_channel
@@ -86,6 +93,7 @@ onMounted(async () => {
   minDuration.value = data.min_duration_minutes ?? 3
   maxDuration.value = data.max_duration_minutes ?? 60
   normalizeTargetDb.value = data.normalize_target_db ?? 89
+  driveRootFolder.value = data.drive_root_folder ?? 'YT-MP3'
 })
 
 function validateLatestHours() {
@@ -121,6 +129,7 @@ async function save() {
       min_duration_minutes: minDuration.value,
       max_duration_minutes: maxDuration.value,
       normalize_target_db: normalizeTargetDb.value,
+      drive_root_folder: driveRootFolder.value,
     })
     saved.value = true
   } catch (e: any) {

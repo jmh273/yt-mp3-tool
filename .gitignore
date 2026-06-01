@@ -6,6 +6,9 @@ __pycache__/
 backend/test-report.html
 backend/_version.txt
 
+# Build/run logs
+build.log
+
 # Node
 node_modules/
 frontend/node_modules/

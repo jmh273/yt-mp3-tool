@@ -252,4 +252,48 @@ describe('SelectedVideos', () => {
       expect.objectContaining({ seqEnabled: true }),
     )
   })
+
+  // ── 下載目錄完整路徑（ui-drive-upload-tab）─────────────────────
+  it('「下載到」欄位顯示完整路徑', async () => {
+    const { apiGet } = await import('@/api')
+    vi.mocked(apiGet).mockImplementation(async (url: string) => {
+      if (url === '/settings') return { output_path: 'D:\\Music' } as any
+      return { next_seq: '01', existing: [] } as any
+    })
+    const download = useDownloadStore()
+    download.toggle(FAKE_VIDEO)
+
+    const wrapper = mount(SelectedVideos)
+    await flushPromises()
+    const input = wrapper.find<HTMLInputElement>('[data-testid="download-target-dir"]')
+    expect(input.element.value).toMatch(/^D:\\Music\\\d{8}$/)
+  })
+
+  it('onDownload 以完整路徑的最後一段作為 targetDir', async () => {
+    const { apiGet } = await import('@/api')
+    vi.mocked(apiGet).mockImplementation(async (url: string) => {
+      if (url === '/settings') return { output_path: 'D:\\Music' } as any
+      return { next_seq: '01', existing: [] } as any
+    })
+    const download = useDownloadStore()
+    download.toggle(FAKE_VIDEO)
+    const spy = vi.spyOn(download, 'startDownload').mockResolvedValue(undefined)
+
+    const wrapper = mount(SelectedVideos)
+    await flushPromises()
+    await wrapper.find('[data-testid="download-target-dir"]').setValue('D:\\Music\\20260601_sports')
+    await wrapper.find('.dl').trigger('click')
+    await flushPromises()
+
+    expect(spy).toHaveBeenCalledWith('mp3', 192, expect.objectContaining({ targetDir: '20260601_sports' }))
+  })
+
+  it('不再顯示 Drive 上傳按鈕（已移至上傳分頁）', () => {
+    const download = useDownloadStore()
+    download.toggle(FAKE_VIDEO)
+
+    const wrapper = mount(SelectedVideos)
+    expect(wrapper.find('[data-testid="drive-upload-button"]').exists()).toBe(false)
+    expect(wrapper.find('.choose-btn').exists()).toBe(false)
+  })
 })

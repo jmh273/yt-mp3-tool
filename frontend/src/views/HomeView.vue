@@ -159,7 +159,7 @@
         <SimilarChannelDiscoveryFeed v-else-if="activeView === 'discovery'" />
       </main>
 
-      <!-- 第三欄：分頁式右欄（下載 / 音量正規化） -->
+      <!-- 第三欄：分頁式右欄（下載 / 音量正規化 / 上傳雲端硬碟） -->
       <aside class="right-pane-progress">
         <div class="tab-bar">
           <button
@@ -178,11 +178,20 @@
             音量正規化
             <span v-if="activeRightTab !== 'normalize' && normalizeStore.status === 'running'" class="dot" />
           </button>
+          <button
+            class="tab"
+            :class="{ active: activeRightTab === 'upload' }"
+            @click="activeRightTab = 'upload'"
+          >
+            上傳雲端硬碟
+            <span v-if="activeRightTab !== 'upload' && driveUploadStore.status === 'running'" class="dot" />
+          </button>
         </div>
         <div class="tab-content">
           <KeepAlive>
             <SelectedVideos v-if="activeRightTab === 'download'" />
-            <VolumeNormalizer v-else />
+            <VolumeNormalizer v-else-if="activeRightTab === 'normalize'" />
+            <DriveUploadPanel v-else />
           </KeepAlive>
         </div>
       </aside>
@@ -196,6 +205,7 @@ import { apiGet, apiDelete } from '@/api'
 import { useAuthStore } from '@/stores/auth'
 import { useDownloadStore } from '@/stores/download'
 import { useNormalizeStore } from '@/stores/normalize'
+import { useDriveUploadStore } from '@/stores/driveUpload'
 import { useQuotaStore } from '@/stores/quota'
 import { useWatchlistStore } from '@/stores/watchlist'
 import ChannelVideos from '@/components/ChannelVideos.vue'
@@ -207,6 +217,7 @@ import SimilarChannelDiscoveryFeed from '@/components/SimilarChannelDiscoveryFee
 import WatchlistPanel from '@/components/WatchlistPanel.vue'
 import SelectedVideos from '@/components/SelectedVideos.vue'
 import VolumeNormalizer from '@/components/VolumeNormalizer.vue'
+import DriveUploadPanel from '@/components/DriveUploadPanel.vue'
 
 interface Channel {
   subscription_id: string
@@ -218,6 +229,7 @@ interface Channel {
 const auth = useAuthStore()
 const downloadStore = useDownloadStore()
 const normalizeStore = useNormalizeStore()
+const driveUploadStore = useDriveUploadStore()
 const quota = useQuotaStore()
 const watchlist = useWatchlistStore()
 const quotaUsedDisplay = computed(() => quota.used === null ? '—' : quota.used)
@@ -229,7 +241,7 @@ const version = ref('')
 const selectedChannelId = ref<string | null>(null)
 const activeView = ref<'none' | 'channel' | 'latest' | 'trending' | 'search' | 'url' | 'discovery'>('none')
 const activeLeftTab = ref<'subscribed' | 'watchlist'>('subscribed')
-const activeRightTab = ref<'download' | 'normalize'>('download')
+const activeRightTab = ref<'download' | 'normalize' | 'upload'>('download')
 const checkingDates = ref(false)
 const channelDates = ref<Record<string, string>>({})
 const accountDropdownOpen = ref(false)

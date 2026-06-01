@@ -28,6 +28,9 @@ export const useDownloadStore = defineStore('download', () => {
   const taskId = ref<string | null>(null)
   const progress = ref<Record<string, ProgressItem>>({})
   const downloading = ref(false)
+  const lastWorkDirName = ref(localStorage.getItem('yt_mp3_last_work_dir') || '')
+  // 下載目標資料夾的完整路徑，由下載分頁維護，音量正規化 / 上傳分頁共用為預設值
+  const targetDirPath = ref('')
 
   const downloadedIds = ref<Set<string>>(new Set())
   const storedIds = localStorage.getItem('yt_mp3_downloaded_ids')
@@ -72,7 +75,7 @@ export const useDownloadStore = defineStore('download', () => {
   async function startDownload(
     format: 'mp3' | 'mp4' = 'mp3',
     quality: number = 192,
-    opts: { seqEnabled?: boolean; startSeq?: string | null } = {},
+    opts: { seqEnabled?: boolean; startSeq?: string | null; targetDir?: string | null } = {},
   ) {
     if (selected.value.length === 0) return
     downloading.value = true
@@ -90,6 +93,11 @@ export const useDownloadStore = defineStore('download', () => {
       if (typeof opts.startSeq === 'string' && opts.startSeq.length > 0) {
         payload.start_seq = opts.startSeq
       }
+    }
+    if ('targetDir' in opts && typeof opts.targetDir === 'string' && opts.targetDir.trim()) {
+      payload.target_dir = opts.targetDir.trim()
+      lastWorkDirName.value = opts.targetDir.trim()
+      localStorage.setItem('yt_mp3_last_work_dir', lastWorkDirName.value)
     }
 
     const { task_id } = await apiPost<{ task_id: string }>('/download', payload)
@@ -117,5 +125,5 @@ export const useDownloadStore = defineStore('download', () => {
     }
   }
 
-  return { selected, taskId, progress, downloading, toggle, isSelected, clearAll, startDownload, isDownloaded, markAsDownloaded }
+  return { selected, taskId, progress, downloading, lastWorkDirName, targetDirPath, toggle, isSelected, clearAll, startDownload, isDownloaded, markAsDownloaded }
 })
