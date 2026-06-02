@@ -492,6 +492,162 @@ async def test_next_seq_widens_past_99(client, tmp_path):
     assert r.json() == {"next_seq": "121", "existing": [120]}
 
 
+# ── concurrent downloads ──────────────────────────────────────────────────────
+def _capture_prefix_by_title(videos, tmp_path, **kwargs):
+    """Run run_download with a fake yt-dlp; return {title: seq_prefix} by parsing
+    each outtmpl. Decoupled from call order so it survives concurrent execution."""
+    import os
+    mapping: dict[str, str] = {}
+    lock = __import__("threading").Lock()
+
+    def fake_ydl_init(opts):
+        # outtmpl tail looks like "<prefix><title>.%(ext)s"
+        tail = os.path.basename(opts["outtmpl"]).replace(".%(ext)s", "")
+        for v in videos:
+            title = v["title"]
+            if tail.endswith(title):
+                with lock:
+                    mapping[title] = tail[: len(tail) - len(title)]
+        return MagicMock(__enter__=MagicMock(return_value=MagicMock(download=MagicMock())),
+                         __exit__=MagicMock(return_value=False))
+
+    with patch("yt_dlp.YoutubeDL", side_effect=fake_ydl_init):
+        main.run_download(videos, str(tmp_path), "task-cc", **kwargs)
+    return mapping
+
+
+def test_concurrent_prefix_decoupled_from_completion_order(tmp_path):
+    """concurrency>1: prefixes follow batch index, not finish order (C may finish first)."""
+    videos = [
+        {"video_id": "v1", "title": "AAA", "url": "u"},
+        {"video_id": "v2", "title": "BBB", "url": "u"},
+        {"video_id": "v3", "title": "CCC", "url": "u"},
+    ]
+    mapping = _capture_prefix_by_title(videos, tmp_path, concurrency=3)
+    assert mapping == {"AAA": "01_", "BBB": "02_", "CCC": "03_"}
+
+
+def test_concurrent_all_marked_done(tmp_path):
+    """All videos in a concurrent batch reach done and the task finishes done."""
+    task_id = "cc-done"
+    videos = [
+        {"video_id": "v1", "title": "S1", "url": "u"},
+        {"video_id": "v2", "title": "S2", "url": "u"},
+        {"video_id": "v3", "title": "S3", "url": "u"},
+        {"video_id": "v4", "title": "S4", "url": "u"},
+    ]
+    with patch("yt_dlp.YoutubeDL") as MockYDL:
+        instance = MagicMock()
+        instance.__enter__ = MagicMock(return_value=instance)
+        instance.__exit__ = MagicMock(return_value=False)
+        instance.download = MagicMock(return_value=0)
+        MockYDL.return_value = instance
+        main.run_download(videos, str(tmp_path), task_id, concurrency=3)
+
+    items = main.download_progress[task_id]["items"]
+    assert all(items[v["video_id"]]["status"] == "done" for v in videos)
+    assert main.download_progress[task_id]["status"] == "done"
+
+
+def test_concurrent_respects_max_in_flight(tmp_path):
+    """Semaphore caps simultaneous downloads at `concurrency`."""
+    import threading
+    task_id = "cc-cap"
+    videos = [{"video_id": f"v{i}", "title": f"T{i}", "url": "u"} for i in range(8)]
+
+    in_flight = 0
+    peak = 0
+    lock = threading.Lock()
+    release = threading.Event()
+    started = threading.Semaphore(0)
+
+    def slow_download(_urls):
+        nonlocal in_flight, peak
+        with lock:
+            in_flight += 1
+            peak = max(peak, in_flight)
+        started.release()
+        release.wait(timeout=5)
+        with lock:
+            in_flight -= 1
+        return 0
+
+    def fake_ydl_init(_opts):
+        inst = MagicMock()
+        inst.__enter__ = MagicMock(return_value=inst)
+        inst.__exit__ = MagicMock(return_value=False)
+        inst.download = MagicMock(side_effect=slow_download)
+        return inst
+
+    def run():
+        with patch("yt_dlp.YoutubeDL", side_effect=fake_ydl_init):
+            main.run_download(videos, str(tmp_path), task_id, concurrency=3)
+
+    t = threading.Thread(target=run)
+    t.start()
+    # wait until 3 downloads are in flight, then confirm no 4th starts
+    for _ in range(3):
+        assert started.acquire(timeout=5)
+    assert started.acquire(timeout=0.3) is False  # 4th must be blocked by semaphore
+    with lock:
+        assert peak == 3
+    release.set()
+    t.join(timeout=5)
+    assert peak == 3
+    assert main.download_progress[task_id]["status"] == "done"
+
+
+def test_concurrent_partial_failure_does_not_block_others(tmp_path):
+    """One failing video → error for it, others still complete; task ends done."""
+    task_id = "cc-fail"
+    videos = [
+        {"video_id": "ok1", "title": "Ok1", "url": "u"},
+        {"video_id": "bad", "title": "Bad", "url": "u"},
+        {"video_id": "ok2", "title": "Ok2", "url": "u"},
+    ]
+
+    def fake_ydl_init(opts):
+        inst = MagicMock()
+        inst.__enter__ = MagicMock(return_value=inst)
+        inst.__exit__ = MagicMock(return_value=False)
+        if opts["outtmpl"].endswith("02_Bad.%(ext)s"):
+            inst.download = MagicMock(side_effect=Exception("boom"))
+        else:
+            inst.download = MagicMock(return_value=0)
+        return inst
+
+    with patch("yt_dlp.YoutubeDL", side_effect=fake_ydl_init):
+        main.run_download(videos, str(tmp_path), task_id, concurrency=3)
+
+    items = main.download_progress[task_id]["items"]
+    assert items["ok1"]["status"] == "done"
+    assert items["ok2"]["status"] == "done"
+    assert items["bad"]["status"] == "error"
+    assert "boom" in items["bad"]["error"]
+    assert main.download_progress[task_id]["status"] == "done"
+
+
+# ── _resolve_concurrency ──────────────────────────────────────────────────────
+def test_resolve_concurrency_default_when_missing():
+    assert main._resolve_concurrency({}) == 3
+
+
+def test_resolve_concurrency_clamps_range():
+    assert main._resolve_concurrency({"download_concurrency": 0}) == 1
+    assert main._resolve_concurrency({"download_concurrency": 99}) == 8
+    assert main._resolve_concurrency({"download_concurrency": 5}) == 5
+
+
+def test_resolve_concurrency_invalid_falls_back():
+    assert main._resolve_concurrency({"download_concurrency": "abc"}) == 3
+    assert main._resolve_concurrency({"download_concurrency": None}) == 3
+
+
+def test_default_settings_includes_concurrency():
+    assert main.DEFAULT_SETTINGS["download_concurrency"] == 3
+    assert main.load_settings()["download_concurrency"] >= 1
+
+
 # ── _sync_url_preview_yt_dlp: watch+list URLs must expand as playlist ─────────
 def test_url_preview_uses_extract_flat_in_playlist():
     """Regression guard: opts must use 'in_playlist', not True.

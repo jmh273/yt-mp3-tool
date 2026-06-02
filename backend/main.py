@@ -95,6 +95,7 @@ DEFAULT_SETTINGS = {
     "max_duration_minutes": 60,
     "normalize_target_db": 89.0,
     "drive_root_folder": "YT-MP3",
+    "download_concurrency": 3,
     "quota_used": 0,
     "quota_date": "",
 }
@@ -2260,6 +2261,15 @@ def _build_ydl_opts(output_path: str, safe_title: str, hook, fmt: str, quality: 
     }
 
 
+def _resolve_concurrency(settings: dict) -> int:
+    """Read download_concurrency from settings, clamp to 1..8, fallback 3 on missing/invalid."""
+    raw = settings.get("download_concurrency", 3)
+    try:
+        return max(1, min(8, int(raw)))
+    except (TypeError, ValueError):
+        return 3
+
+
 def run_download(
     videos: list[dict],
     output_path: str,
@@ -2268,6 +2278,7 @@ def run_download(
     quality: int = 192,
     seq_enabled: bool = True,
     start_seq: str | None = None,
+    concurrency: int = 1,
 ):
     download_progress[task_id] = {"status": "running", "items": {}}
 
@@ -2294,13 +2305,14 @@ def run_download(
         return hook
 
     default_next = _scan_next_seq(pathlib.Path(output_path))
-    for idx, v in enumerate(videos):
+
+    def download_one(idx: int, v: dict):
+        """Download + convert a single video. Errors are caught per-video so a
+        failure never aborts sibling downloads when running concurrently."""
         vid = v["video_id"]
         safe_title = _sanitize_filename(v.get("title", ""))
-        if seq_enabled:
-            seq_prefix = _compute_seq_prefix(start_seq, default_next, idx)
-        else:
-            seq_prefix = ""
+        # 序號前綴依批次內 idx 計算，與完成順序解耦 → 並行下檔名編號仍正確
+        seq_prefix = _compute_seq_prefix(start_seq, default_next, idx) if seq_enabled else ""
         ydl_opts = _build_ydl_opts(output_path, safe_title, make_hook(vid), fmt, quality, seq_prefix)
         try:
             with yt_dlp.YoutubeDL(ydl_opts) as ydl:
@@ -2309,6 +2321,23 @@ def run_download(
         except Exception as e:
             download_progress[task_id]["items"][vid]["status"] = "error"
             download_progress[task_id]["items"][vid]["error"] = str(e)
+
+    if concurrency <= 1 or len(videos) <= 1:
+        for idx, v in enumerate(videos):
+            download_one(idx, v)
+    else:
+        async def _coordinate():
+            sem = asyncio.Semaphore(concurrency)
+
+            async def _one(idx: int, v: dict):
+                async with sem:
+                    await asyncio.to_thread(download_one, idx, v)
+
+            await asyncio.gather(*(_one(idx, v) for idx, v in enumerate(videos)))
+
+        # run_download executes in a worker thread (run_in_executor), so it owns
+        # no running loop here — asyncio.run is safe and keeps the sync interface.
+        asyncio.run(_coordinate())
 
     download_progress[task_id]["status"] = "done"
 
@@ -2327,6 +2356,7 @@ async def start_download(body: DownloadRequest):
     task_id = str(uuid.uuid4())
 
     fmt, quality = _normalize_format_quality(body.format, body.quality)
+    concurrency = _resolve_concurrency(settings)
 
     loop = asyncio.get_event_loop()
     loop.run_in_executor(
@@ -2339,6 +2369,7 @@ async def start_download(body: DownloadRequest):
         quality,
         body.seq_enabled,
         body.start_seq,
+        concurrency,
     )
 
     return {"task_id": task_id}
