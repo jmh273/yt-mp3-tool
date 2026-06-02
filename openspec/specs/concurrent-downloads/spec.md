@@ -16,7 +16,7 @@
 - **THEN** 該影片如現況般下載與轉檔，並行機制不改變其結果
 
 ### Requirement: 並發上限由設定控制
-系統 SHALL 從 settings 讀取 `download_concurrency` 作為並發上限，預設值為 `3`。讀取後 MUST 夾限於 `1`–`8` 之間（含端點）；缺漏或非法值 MUST fallback 為 `3`。前端不提供調整此值的 UI。
+系統 SHALL 從 settings 讀取 `download_concurrency` 作為並發上限，預設值為 `3`。讀取後 MUST 夾限於 `1`–`8` 之間（含端點）；缺漏或非法值 MUST fallback 為 `3`。此並發值 SHALL **同時套用於下載與音量正規化批次**（兩者共用同一設定）。使用者 SHALL 能透過 `PUT /settings` 與設定頁 UI 調整此值；`PUT /settings` 收到的值 MUST 驗證落在 `1`–`8`，超出範圍回傳 422。
 
 #### Scenario: 缺漏時使用預設值
 - **WHEN** settings 未設定 `download_concurrency`
@@ -29,6 +29,14 @@
 #### Scenario: 超出範圍時夾限
 - **WHEN** settings 設定 `download_concurrency` 為 `0` 或 `99`
 - **THEN** 並發上限分別夾限為 `1` 與 `8`
+
+#### Scenario: 經設定頁修改並發數
+- **WHEN** 使用者在設定頁將「並發數」設為 `4` 並儲存
+- **THEN** `PUT /settings` 接受並持久化 `download_concurrency: 4`，之後的下載與正規化批次皆以 4 為並發上限
+
+#### Scenario: PUT /settings 拒絕越界值
+- **WHEN** `PUT /settings` 收到 `download_concurrency` 為 `0` 或 `99`
+- **THEN** 回傳 422（驗證失敗），不寫入設定
 
 ### Requirement: 並行下序號編號正確性
 系統 SHALL 確保啟用序號前綴時，每支影片的 `nn_` 前綴依其在批次中的索引（idx）計算，與下載/轉檔的實際完成順序無關。
