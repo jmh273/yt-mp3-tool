@@ -35,6 +35,7 @@ async def test_get_settings_defaults(client):
     assert data["videos_per_channel"] == 5
     assert "output_path" in data
     assert data["drive_root_folder"] == "YT-MP3"
+    assert data["download_concurrency"] == 3
 
 
 # ── PUT /settings ─────────────────────────────────────────────────────────────
@@ -81,6 +82,27 @@ async def test_put_settings_drive_root_folder(client):
     assert r.status_code == 200
     assert r.json()["drive_root_folder"] == "音樂庫"
     assert r2.json()["drive_root_folder"] == "音樂庫"
+
+
+async def test_put_settings_download_concurrency_valid(client):
+    async with client as c:
+        r = await c.put("/settings", json={"download_concurrency": 4})
+        r2 = await c.get("/settings")
+    assert r.status_code == 200
+    assert r.json()["download_concurrency"] == 4
+    assert r2.json()["download_concurrency"] == 4
+
+
+async def test_put_settings_download_concurrency_too_low(client):
+    async with client as c:
+        r = await c.put("/settings", json={"download_concurrency": 0})
+    assert r.status_code == 422
+
+
+async def test_put_settings_download_concurrency_too_high(client):
+    async with client as c:
+        r = await c.put("/settings", json={"download_concurrency": 99})
+    assert r.status_code == 422
 
 
 async def test_put_settings_rejects_blank_drive_root_folder(client):
@@ -206,6 +228,16 @@ def test_load_settings_passes_through_in_range_value():
     main.SETTINGS_FILE.write_text(json.dumps({"normalize_target_db": 92.0}))
     s = main.load_settings()
     assert s["normalize_target_db"] == 92.0
+
+
+def test_load_settings_does_not_reset_out_of_range_concurrency():
+    """download_concurrency 不在 _SETTINGS_RANGES：load_settings 須原樣保留越界值，
+    交由 _resolve_concurrency 夾限（0→1、99→8），而非 reset 成預設 3。"""
+    main.SETTINGS_FILE.parent.mkdir(parents=True, exist_ok=True)
+    main.SETTINGS_FILE.write_text(json.dumps({"download_concurrency": 99}))
+    s = main.load_settings()
+    assert s["download_concurrency"] == 99
+    assert main._resolve_concurrency(s) == 8
 
 
 def test_load_settings_handles_corrupt_json():

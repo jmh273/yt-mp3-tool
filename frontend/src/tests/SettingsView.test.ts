@@ -19,6 +19,7 @@ const FAKE_SETTINGS = {
   max_duration_minutes: 60,
   normalize_target_db: 89,
   drive_root_folder: 'YT-MP3',
+  download_concurrency: 4,
 }
 
 describe('SettingsView', () => {
@@ -164,6 +165,25 @@ describe('SettingsView', () => {
 
     expect(apiPut).toHaveBeenCalledWith('/settings', expect.objectContaining({
       drive_root_folder: 'MusicDrive',
+    }))
+  })
+
+  it('shows and saves download concurrency', async () => {
+    const { apiGet, apiPut } = await import('@/api')
+    vi.mocked(apiGet).mockResolvedValue(FAKE_SETTINGS)
+    vi.mocked(apiPut).mockResolvedValue({ ...FAKE_SETTINGS, download_concurrency: 6 })
+
+    const wrapper = mount(SettingsView)
+    await flushPromises()
+
+    const concurrencyInput = wrapper.find('[data-testid="download-concurrency"]')
+    expect((concurrencyInput.element as HTMLInputElement).value).toBe('4')
+    await concurrencyInput.setValue('6')
+    await wrapper.find('button').trigger('click')
+    await flushPromises()
+
+    expect(apiPut).toHaveBeenCalledWith('/settings', expect.objectContaining({
+      download_concurrency: 6,
     }))
   })
 })

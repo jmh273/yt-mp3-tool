@@ -1,6 +1,7 @@
 """音量正規化（mp3gain 引擎）端點與工具函式測試"""
 import json
 import pathlib
+import threading
 from unittest.mock import patch
 
 import main
@@ -189,6 +190,29 @@ async def test_normalize_start_target_db_override_used(client, tmp_path):
     assert item["target_db"] == 92.0
 
 
+async def test_normalize_start_passes_resolved_concurrency(client, tmp_path):
+    (tmp_path / "a.mp3").write_bytes(b"x")
+    captured = {}
+
+    def fake_run_in_executor(_executor, fn, *args):
+        captured["fn"] = fn
+        captured["args"] = args
+
+    with patch("main.shutil.which", return_value="/usr/bin/mp3gain"), \
+         patch("main.load_settings", return_value={"normalize_target_db": 89.0, "download_concurrency": 4}), \
+         patch("main.asyncio.get_event_loop") as mock_loop:
+        mock_loop.return_value.run_in_executor = fake_run_in_executor
+        async with client as c:
+            r = await c.post("/normalize/start", json={
+                "directory": str(tmp_path),
+                "filenames": ["a.mp3"],
+            })
+
+    assert r.status_code == 200
+    assert captured["fn"] is main.run_normalize_batch
+    assert captured["args"][-1] == 4
+
+
 async def test_normalize_start_400_when_dir_missing(client, tmp_path):
     bad = tmp_path / "nope"
     with patch("main.shutil.which", return_value="/usr/bin/mp3gain"):
@@ -326,6 +350,102 @@ def test_run_normalize_batch_error_keeps_original_and_continues(tmp_path):
     assert apply_called == [tmp_path / "good.mp3"]
     assert main.normalize_progress[task_id]["status"] == "done"
     assert str(tmp_path) not in main._active_normalize_dirs
+
+
+def test_run_normalize_batch_concurrent_respects_max_in_flight(tmp_path):
+    filenames = [f"{i}.mp3" for i in range(6)]
+    for filename in filenames:
+        (tmp_path / filename).write_bytes(b"x")
+    task_id = _seed_task(filenames)
+    main._active_normalize_dirs.add(str(tmp_path))
+
+    in_flight = 0
+    peak = 0
+    lock = threading.Lock()
+    release = threading.Event()
+    started = threading.Semaphore(0)
+
+    def fake_analyze(_path, _target):
+        nonlocal in_flight, peak
+        with lock:
+            in_flight += 1
+            peak = max(peak, in_flight)
+        started.release()
+        release.wait(timeout=5)
+        with lock:
+            in_flight -= 1
+        return {"measured_db": 84.0, "recommended_db_change": 5.0}
+
+    with patch("main._run_mp3gain_analyze", side_effect=fake_analyze), \
+         patch("main._run_mp3gain_apply"):
+        t = threading.Thread(
+            target=main.run_normalize_batch,
+            args=(task_id, str(tmp_path), filenames, 89.0),
+            kwargs={"concurrency": 3},
+        )
+        t.start()
+        for _ in range(3):
+            assert started.acquire(timeout=5)
+        assert started.acquire(timeout=0.3) is False
+        with lock:
+            assert peak == 3
+        release.set()
+        t.join(timeout=5)
+
+    assert peak == 3
+    assert main.normalize_progress[task_id]["status"] == "done"
+    assert str(tmp_path) not in main._active_normalize_dirs
+
+
+def test_run_normalize_batch_concurrent_handles_skip_done_and_error(tmp_path):
+    filenames = ["skip.mp3", "done.mp3", "bad.mp3"]
+    for filename in filenames:
+        (tmp_path / filename).write_bytes(b"x")
+    task_id = _seed_task(filenames)
+    main._active_normalize_dirs.add(str(tmp_path))
+
+    def fake_analyze(input_path, _target):
+        if input_path.name == "skip.mp3":
+            return {"measured_db": 88.8, "recommended_db_change": 0.2}
+        if input_path.name == "bad.mp3":
+            return {"measured_db": 80.0, "recommended_db_change": 9.0}
+        return {"measured_db": 84.0, "recommended_db_change": 5.0}
+
+    def fake_apply(input_path, _target):
+        if input_path.name == "bad.mp3":
+            raise RuntimeError("apply boom")
+
+    with patch("main._run_mp3gain_analyze", side_effect=fake_analyze), \
+         patch("main._run_mp3gain_apply", side_effect=fake_apply):
+        main.run_normalize_batch(task_id, str(tmp_path), filenames, 89.0, concurrency=3)
+
+    items = main.normalize_progress[task_id]["items"]
+    assert items["skip.mp3"]["status"] == "skipped"
+    assert items["done.mp3"]["status"] == "done"
+    assert items["bad.mp3"]["status"] == "error"
+    assert "apply boom" in items["bad.mp3"]["error"]
+    assert main.normalize_progress[task_id]["status"] == "done"
+    assert str(tmp_path) not in main._active_normalize_dirs
+
+
+def test_run_normalize_batch_concurrency_one_uses_sequential_path(tmp_path):
+    filenames = ["a.mp3", "b.mp3", "c.mp3"]
+    for filename in filenames:
+        (tmp_path / filename).write_bytes(b"x")
+    task_id = _seed_task(filenames)
+    main._active_normalize_dirs.add(str(tmp_path))
+    seen = []
+
+    def fake_analyze(input_path, _target):
+        seen.append(input_path.name)
+        return {"measured_db": 84.0, "recommended_db_change": 5.0}
+
+    with patch("main._run_mp3gain_analyze", side_effect=fake_analyze), \
+         patch("main._run_mp3gain_apply"):
+        main.run_normalize_batch(task_id, str(tmp_path), filenames, 89.0, concurrency=1)
+
+    assert seen == filenames
+    assert main.normalize_progress[task_id]["status"] == "done"
 
 
 # ── POST /normalize/rename ───────────────────────────────────────────────────

@@ -922,6 +922,7 @@ class SettingsUpdate(BaseModel):
     max_duration_minutes: int | None = None
     normalize_target_db: float | None = None
     drive_root_folder: str | None = None
+    download_concurrency: int | None = Field(default=None, ge=1, le=8)
 
 
 @app.put("/settings")
@@ -952,6 +953,8 @@ def update_settings(body: SettingsUpdate):
         if not folder:
             raise HTTPException(status_code=422, detail="drive_root_folder must not be blank")
         settings["drive_root_folder"] = folder
+    if body.download_concurrency is not None:
+        settings["download_concurrency"] = body.download_concurrency
     save_settings(settings)
     return settings
 
@@ -2476,29 +2479,51 @@ def _run_mp3gain_apply(input_path: pathlib.Path, target_db: float) -> None:
         raise RuntimeError(f"mp3gain apply failed: {(proc.stderr or proc.stdout).strip()[-400:]}")
 
 
-def run_normalize_batch(task_id: str, directory: str, filenames: list[str], target_db: float) -> None:
+def run_normalize_batch(
+    task_id: str,
+    directory: str,
+    filenames: list[str],
+    target_db: float,
+    concurrency: int = 1,
+) -> None:
     state = normalize_progress[task_id]
     dir_path = pathlib.Path(directory)
+
+    def normalize_one(filename: str) -> None:
+        item = state["items"][filename]
+        file_path = dir_path / filename
+        try:
+            item["status"] = "measuring"
+            analyzed = _run_mp3gain_analyze(file_path, target_db)
+            item["measured_db"] = analyzed["measured_db"]
+            item["recommended_db_change"] = analyzed["recommended_db_change"]
+
+            if abs(analyzed["recommended_db_change"]) < MP3GAIN_TOLERANCE_DB:
+                item["status"] = "skipped"
+                return
+
+            item["status"] = "normalizing"
+            _run_mp3gain_apply(file_path, target_db)
+            item["status"] = "done"
+        except Exception as e:
+            item["status"] = "error"
+            item["error"] = str(e)
+
     try:
-        for filename in filenames:
-            item = state["items"][filename]
-            file_path = dir_path / filename
-            try:
-                item["status"] = "measuring"
-                analyzed = _run_mp3gain_analyze(file_path, target_db)
-                item["measured_db"] = analyzed["measured_db"]
-                item["recommended_db_change"] = analyzed["recommended_db_change"]
+        if concurrency <= 1 or len(filenames) <= 1:
+            for filename in filenames:
+                normalize_one(filename)
+        else:
+            async def _coordinate() -> None:
+                sem = asyncio.Semaphore(concurrency)
 
-                if abs(analyzed["recommended_db_change"]) < MP3GAIN_TOLERANCE_DB:
-                    item["status"] = "skipped"
-                    continue
+                async def _one(filename: str) -> None:
+                    async with sem:
+                        await asyncio.to_thread(normalize_one, filename)
 
-                item["status"] = "normalizing"
-                _run_mp3gain_apply(file_path, target_db)
-                item["status"] = "done"
-            except Exception as e:
-                item["status"] = "error"
-                item["error"] = str(e)
+                await asyncio.gather(*(_one(filename) for filename in filenames))
+
+            asyncio.run(_coordinate())
     finally:
         state["status"] = "done"
         _active_normalize_dirs.discard(directory)
@@ -2552,6 +2577,7 @@ async def normalize_start(body: NormalizeStartRequest):
 
     settings = load_settings()
     target_db = float(body.target_db if body.target_db is not None else settings.get("normalize_target_db", 89.0))
+    concurrency = _resolve_concurrency(settings)
 
     import uuid
     task_id = str(uuid.uuid4())
@@ -2572,7 +2598,7 @@ async def normalize_start(body: NormalizeStartRequest):
     _active_normalize_dirs.add(dir_key)
 
     loop = asyncio.get_event_loop()
-    loop.run_in_executor(None, run_normalize_batch, task_id, dir_key, body.filenames, target_db)
+    loop.run_in_executor(None, run_normalize_batch, task_id, dir_key, body.filenames, target_db, concurrency)
 
     return {"task_id": task_id}
 
