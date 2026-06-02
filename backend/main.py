@@ -2375,7 +2375,7 @@ async def start_download(body: DownloadRequest):
         concurrency,
     )
 
-    return {"task_id": task_id}
+    return {"task_id": task_id, "directory": str(final_output_path.resolve())}
 
 
 @app.get("/download/next-seq")
@@ -2743,8 +2743,15 @@ def _drive_file_names(service, parent_id: str) -> set[str]:
     return {item["name"] for item in result.get("files", []) if item.get("name")}
 
 
-def _local_mp3_files(directory: pathlib.Path) -> list[pathlib.Path]:
-    return sorted(p for p in directory.iterdir() if p.is_file() and p.suffix.lower() == ".mp3")
+_UPLOAD_EXTS = (".mp3", ".mp4")
+
+
+def _local_media_files(directory: pathlib.Path) -> list[pathlib.Path]:
+    return sorted(p for p in directory.iterdir() if p.is_file() and p.suffix.lower() in _UPLOAD_EXTS)
+
+
+def _media_mimetype(path: pathlib.Path) -> str:
+    return "video/mp4" if path.suffix.lower() == ".mp4" else "audio/mpeg"
 
 
 def run_drive_upload_batch(task_id: str, directory: pathlib.Path, service, root_folder: str):
@@ -2753,21 +2760,21 @@ def run_drive_upload_batch(task_id: str, directory: pathlib.Path, service, root_
         "directory": str(directory),
         "items": {
             p.name: {"filename": p.name, "status": "pending", "error": None}
-            for p in _local_mp3_files(directory)
+            for p in _local_media_files(directory)
         },
     })
     try:
         root_id = _ensure_drive_folder(service, root_folder, None)
         leaf_id = _ensure_drive_folder(service, directory.name, root_id)
         existing = _drive_file_names(service, leaf_id)
-        for file_path in _local_mp3_files(directory):
+        for file_path in _local_media_files(directory):
             item = state["items"][file_path.name]
             if file_path.name in existing:
                 item["status"] = "skipped"
                 continue
             item["status"] = "uploading"
             try:
-                media = MediaFileUpload(str(file_path), mimetype="audio/mpeg", resumable=False)
+                media = MediaFileUpload(str(file_path), mimetype=_media_mimetype(file_path), resumable=False)
                 service.files().create(
                     body={"name": file_path.name, "parents": [leaf_id]},
                     media_body=media,
@@ -2809,7 +2816,7 @@ def _build_drive_service():
 async def drive_upload_start(body: DriveUploadRequest):
     settings = load_settings()
     directory = _resolve_upload_directory(body.directory, settings["output_path"])
-    files = _local_mp3_files(directory)
+    files = _local_media_files(directory)
     import uuid
     task_id = str(uuid.uuid4())
     drive_upload_progress[task_id] = {
@@ -2850,7 +2857,7 @@ def _collect_upload_folders(settings: dict) -> list[dict]:
     root_id = _ensure_drive_folder(service, root_folder, None)
     folders = []
     for folder in sorted((p for p in output.iterdir() if p.is_dir()), key=lambda p: p.name, reverse=True):
-        local_names = {p.name for p in _local_mp3_files(folder)}
+        local_names = {p.name for p in _local_media_files(folder)}
         uploaded = False
         if local_names:
             result = service.files().list(

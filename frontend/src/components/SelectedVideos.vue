@@ -54,6 +54,14 @@
         />
       </label>
 
+      <label class="auto-pipeline-label">
+        <input data-testid="auto-pipeline" type="checkbox" v-model="download.autoPipeline" :disabled="download.downloading" />
+        <span>下載完成後自動正規化並上傳</span>
+      </label>
+      <small v-if="format === 'mp4'" data-testid="auto-pipeline-mp4-hint" class="hint">
+        MP4 會略過音量正規化，下載完成後直接上傳。
+      </small>
+
       <div class="actions">
         <button class="clear" @click="download.clearAll" :disabled="download.downloading">清除全部</button>
         <button
@@ -235,6 +243,8 @@ function statusLabel(status: string) {
 .format-select:disabled, .quality-select:disabled, .target-folder-input:disabled { opacity: 0.5; cursor: not-allowed; background: #f5f5f5; }
 .seq-row { display: flex; flex-wrap: wrap; align-items: flex-end; gap: 0.6rem; width: 100%; }
 .seq-checkbox-label { display: inline-flex; align-items: center; gap: 0.35rem; font-size: 0.85rem; cursor: pointer; padding-bottom: 0.35rem; }
+.auto-pipeline-label { display: inline-flex; align-items: center; gap: 0.35rem; font-size: 0.85rem; cursor: pointer; }
+.hint { color: #888; font-size: 0.75rem; font-weight: normal; }
 .start-seq-input { width: 5rem; padding: 0.35rem 0.4rem; font-size: 0.85rem; border: 1px solid #ccc; border-radius: 4px; text-align: center; font-variant-numeric: tabular-nums; }
 .seq-warn { margin: 0; font-size: 0.78rem; color: #d97706; align-self: stretch; }
 .actions { display: flex; gap: 0.5rem; width: 100%; }

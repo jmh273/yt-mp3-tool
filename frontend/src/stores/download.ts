@@ -1,5 +1,5 @@
 import { defineStore } from 'pinia'
-import { ref } from 'vue'
+import { ref, watch } from 'vue'
 import { apiPost, API_BASE } from '@/api'
 
 export interface VideoItem {
@@ -29,6 +29,9 @@ export const useDownloadStore = defineStore('download', () => {
   const progress = ref<Record<string, ProgressItem>>({})
   const downloading = ref(false)
   const lastWorkDirName = ref(localStorage.getItem('yt_mp3_last_work_dir') || '')
+  const autoPipeline = ref<boolean>(localStorage.getItem('yt_mp3_auto_pipeline') === 'true')
+  const lastDownloadDir = ref('')
+  const lastFormat = ref<'mp3' | 'mp4'>('mp3')
   // 下載目標資料夾的完整路徑，由下載分頁維護，音量正規化 / 上傳分頁共用為預設值
   const targetDirPath = ref('')
 
@@ -41,6 +44,10 @@ export const useDownloadStore = defineStore('download', () => {
       // ignore
     }
   }
+
+  watch(autoPipeline, (v) => {
+    localStorage.setItem('yt_mp3_auto_pipeline', String(v))
+  }, { flush: 'sync' })
 
   function markAsDownloaded(videoId: string) {
     downloadedIds.value.add(videoId)
@@ -79,6 +86,7 @@ export const useDownloadStore = defineStore('download', () => {
   ) {
     if (selected.value.length === 0) return
     downloading.value = true
+    lastFormat.value = format
     progress.value = {}
 
     const payload: Record<string, unknown> = {
@@ -100,8 +108,9 @@ export const useDownloadStore = defineStore('download', () => {
       localStorage.setItem('yt_mp3_last_work_dir', lastWorkDirName.value)
     }
 
-    const { task_id } = await apiPost<{ task_id: string }>('/download', payload)
+    const { task_id, directory } = await apiPost<{ task_id: string; directory?: string }>('/download', payload)
     taskId.value = task_id
+    lastDownloadDir.value = directory ?? ''
 
     const es = new EventSource(`${API_BASE}/download/progress/${task_id}`)
     es.onmessage = (e) => {
@@ -125,5 +134,21 @@ export const useDownloadStore = defineStore('download', () => {
     }
   }
 
-  return { selected, taskId, progress, downloading, lastWorkDirName, targetDirPath, toggle, isSelected, clearAll, startDownload, isDownloaded, markAsDownloaded }
+  return {
+    selected,
+    taskId,
+    progress,
+    downloading,
+    lastWorkDirName,
+    targetDirPath,
+    autoPipeline,
+    lastDownloadDir,
+    lastFormat,
+    toggle,
+    isSelected,
+    clearAll,
+    startDownload,
+    isDownloaded,
+    markAsDownloaded,
+  }
 })

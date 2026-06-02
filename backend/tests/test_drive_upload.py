@@ -98,6 +98,34 @@ def test_run_drive_upload_batch_skips_existing_and_uploads_missing(tmp_path):
     assert upload_calls[0].kwargs["body"]["name"] == "02_new.mp3"
 
 
+def test_run_drive_upload_batch_uploads_mp4_with_video_mimetype(tmp_path):
+    directory = tmp_path / "20260601_sports"
+    directory.mkdir()
+    (directory / "01_song.mp3").write_bytes(b"x")
+    (directory / "02_clip.mp4").write_bytes(b"y")
+    service = MagicMock()
+    files = service.files.return_value
+    files.list.return_value.execute.side_effect = [
+        {"files": [{"id": "root-id"}]},
+        {"files": [{"id": "leaf-id"}]},
+        {"files": []},
+    ]
+    files.create.return_value.execute.return_value = {"id": "uploaded-id"}
+
+    with patch("main.MediaFileUpload") as mock_media:
+        main.run_drive_upload_batch("task-mp4", directory, service, "YT-MP3")
+
+    uploaded_mimetypes = {
+        Path(call.args[0]).name: call.kwargs["mimetype"]
+        for call in mock_media.call_args_list
+    }
+    assert uploaded_mimetypes == {
+        "01_song.mp3": "audio/mpeg",
+        "02_clip.mp4": "video/mp4",
+    }
+    assert main.drive_upload_progress["task-mp4"]["items"]["02_clip.mp4"]["status"] == "done"
+
+
 async def test_post_drive_upload_validates_directory_under_output_path(client, tmp_path):
     out = tmp_path / "out"
     batch = out / "20260601_sports"
@@ -116,6 +144,26 @@ async def test_post_drive_upload_validates_directory_under_output_path(client, t
     assert "task_id" in r.json()
     assert main.drive_upload_progress[r.json()["task_id"]]["items"]["01_song.mp3"]["status"] == "pending"
     assert mock_run.call_args.args[1] == batch.resolve()
+
+
+async def test_post_drive_upload_includes_mp4_items(client, tmp_path):
+    out = tmp_path / "out"
+    batch = out / "20260601_sports"
+    batch.mkdir(parents=True)
+    (batch / "01_song.mp3").write_bytes(b"x")
+    (batch / "02_clip.mp4").write_bytes(b"y")
+
+    with patch("main.load_settings", return_value={"output_path": str(out), "drive_root_folder": "YT-MP3"}), \
+         patch("main.load_drive_credentials", return_value=MagicMock()), \
+         patch("main.build") as mock_build, \
+         patch("main.run_drive_upload_batch"):
+        mock_build.return_value = MagicMock()
+        async with client as c:
+            r = await c.post("/drive/upload", json={"directory": str(batch)})
+
+    assert r.status_code == 200
+    items = main.drive_upload_progress[r.json()["task_id"]]["items"]
+    assert set(items) == {"01_song.mp3", "02_clip.mp4"}
 
 
 async def test_post_drive_upload_rejects_directory_outside_output_path(client, tmp_path):
@@ -172,3 +220,25 @@ async def test_get_drive_upload_folders_marks_uploaded(client, tmp_path):
     by_name = {item["name"]: item for item in r.json()["folders"]}
     assert by_name["20260601_sports"]["uploaded"] is True
     assert by_name["20260601_evening"]["uploaded"] is False
+
+
+async def test_get_drive_upload_folders_marks_mp4_folder_uploaded(client, tmp_path):
+    out = tmp_path / "out"
+    folder = out / "20260601_video"
+    folder.mkdir(parents=True)
+    (folder / "01_clip.mp4").write_bytes(b"x")
+    service = MagicMock()
+    files = service.files.return_value
+    files.list.return_value.execute.side_effect = [
+        {"files": [{"id": "root-id"}]},
+        {"files": [{"id": "video-id"}]},
+        {"files": [{"name": "01_clip.mp4"}]},
+    ]
+    with patch("main.load_settings", return_value={"output_path": str(out), "drive_root_folder": "YT-MP3"}), \
+         patch("main.load_drive_credentials", return_value=MagicMock()), \
+         patch("main.build", return_value=service):
+        async with client as c:
+            r = await c.get("/drive/upload/folders")
+
+    assert r.status_code == 200
+    assert r.json()["folders"][0]["uploaded"] is True

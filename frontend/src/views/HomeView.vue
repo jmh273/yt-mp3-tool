@@ -219,6 +219,7 @@ import WatchlistPanel from '@/components/WatchlistPanel.vue'
 import SelectedVideos from '@/components/SelectedVideos.vue'
 import VolumeNormalizer from '@/components/VolumeNormalizer.vue'
 import DriveUploadPanel from '@/components/DriveUploadPanel.vue'
+import { useAutoPostDownloadPipeline } from '@/composables/useAutoPostDownloadPipeline'
 
 interface Channel {
   subscription_id: string
@@ -244,6 +245,7 @@ const selectedChannelId = ref<string | null>(null)
 const activeView = ref<'none' | 'channel' | 'latest' | 'trending' | 'search' | 'url' | 'discovery'>('none')
 const activeLeftTab = ref<'subscribed' | 'watchlist'>('subscribed')
 const activeRightTab = ref<'download' | 'normalize' | 'upload'>('download')
+useAutoPostDownloadPipeline(activeRightTab)
 const checkingDates = ref(false)
 const channelDates = ref<Record<string, string>>({})
 const accountDropdownOpen = ref(false)

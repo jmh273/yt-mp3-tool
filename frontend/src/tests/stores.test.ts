@@ -84,11 +84,21 @@ describe('authStore', () => {
 describe('downloadStore target folders', () => {
   beforeEach(() => {
     setActivePinia(createPinia())
+    localStorage.clear()
+  })
+
+  it('autoPipeline defaults off and persists changes', () => {
+    const store = useDownloadStore()
+    expect(store.autoPipeline).toBe(false)
+
+    store.autoPipeline = true
+
+    expect(localStorage.getItem('yt_mp3_auto_pipeline')).toBe('true')
   })
 
   it('startDownload includes target_dir when provided', async () => {
     const { apiPost } = await import('@/api')
-    vi.mocked(apiPost).mockResolvedValue({ task_id: 't' })
+    vi.mocked(apiPost).mockResolvedValue({ task_id: 't', directory: 'C:/out/20260601_sports' })
     const { Ctor } = makeEventSourceMock()
     vi.stubGlobal('EventSource', Ctor)
 
@@ -100,6 +110,22 @@ describe('downloadStore target folders', () => {
       target_dir: '20260601_sports',
     }))
     expect(store.lastWorkDirName).toBe('20260601_sports')
+    expect(store.lastDownloadDir).toBe('C:/out/20260601_sports')
+    expect(store.lastFormat).toBe('mp3')
+  })
+
+  it('startDownload records mp4 as last format for pipeline routing', async () => {
+    const { apiPost } = await import('@/api')
+    vi.mocked(apiPost).mockResolvedValue({ task_id: 't', directory: 'C:/out/videos' })
+    const { Ctor } = makeEventSourceMock()
+    vi.stubGlobal('EventSource', Ctor)
+
+    const store = useDownloadStore()
+    store.toggle(FAKE_VIDEO)
+    await store.startDownload('mp4', 720)
+
+    expect(store.lastFormat).toBe('mp4')
+    expect(store.lastDownloadDir).toBe('C:/out/videos')
   })
 })
 

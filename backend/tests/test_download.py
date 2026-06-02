@@ -415,8 +415,10 @@ async def test_post_download_uses_target_dir_under_output_path(client, tmp_path)
 
     assert r.status_code == 200
     args = mock_run.call_args.args
-    assert pathlib.Path(args[1]) == tmp_path / "20260601_sports"
-    assert (tmp_path / "20260601_sports").is_dir()
+    expected_dir = tmp_path / "20260601_sports"
+    assert pathlib.Path(args[1]) == expected_dir
+    assert pathlib.Path(r.json()["directory"]) == expected_dir.resolve()
+    assert expected_dir.is_dir()
 
 
 async def test_post_download_rejects_target_dir_path_traversal(client, tmp_path):

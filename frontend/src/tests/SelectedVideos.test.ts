@@ -24,6 +24,7 @@ const FAKE_VIDEO = {
 describe('SelectedVideos', () => {
   beforeEach(() => {
     setActivePinia(createPinia())
+    localStorage.clear()
   })
 
   it('無選取影片時不顯示面板', () => {
