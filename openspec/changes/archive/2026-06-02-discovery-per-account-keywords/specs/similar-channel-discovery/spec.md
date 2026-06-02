@@ -1,10 +1,4 @@
-# Spec: Similar Channel Discovery
-
-## Purpose
-
-Defines the「🔍 同類新頻道」discovery feature — a backend pipeline + frontend tab that surfaces YouTube videos from channels stylistically similar to (but not already in) the user's subscriptions. Covers: per-user interest profile construction (subscribed channels + extracted keywords + dominant language) with both in-memory and disk persistence, two-phase candidate retrieval (fast `videos.list?chart=mostPopular` + slow `search.list?type=channel`), relevance + language filtering, ranking, pagination ("換一批"), and one-click ➕ subscribe via `subscriptions.insert`. All YouTube Data API calls are counted against the daily quota.
-
-## Requirements
+## MODIFIED Requirements
 
 ### Requirement: 使用者興趣 Profile 建構
 
@@ -65,47 +59,6 @@ Defines the「🔍 同類新頻道」discovery feature — a backend pipeline + 
 - **WHEN** 使用者沒有任何訂閱頻道時進入「同類新頻道」tab
 - **THEN** 系統回傳空狀態 + 提示文字「請先訂閱至少一個頻道才能使用此功能」
 
-### Requirement: 候選影片池建構（兩階段）
-
-系統 SHALL 以兩階段策略建構候選影片池：fast phase 使用 `videos.list?chart=mostPopular` 依 top categories 撈熱門影片；full phase 額外使用 `search.list?type=channel&q=keywords` 找相似頻道並抓其 uploads。兩 phase 結果合併、過濾、排序後 cache 整份候選池。
-
-#### Scenario: Fast phase 先回傳結果
-
-- **WHEN** 前端呼叫 `GET /discovery/similar-channels?phase=fast`
-- **THEN** backend 只執行 mostPopular 分支（每個 top category 一次，最多 6 次）
-- **AND** 在 2 秒內回傳第一批候選影片 + 分頁 token
-
-#### Scenario: Full phase 補完候選池
-
-- **WHEN** 前端呼叫 `GET /discovery/similar-channels?phase=full`
-- **THEN** backend 執行 search.list 分支（最多 8 次）
-- **AND** 抓相似頻道的 uploads playlist 近期影片
-- **AND** 合併兩 phase 結果，存入 cache 的候選池
-- **AND** 回傳完整候選清單
-
-#### Scenario: 過濾已訂閱頻道
-
-- **WHEN** 候選池建構完成
-- **THEN** 系統 MUST 移除所有屬於使用者已訂閱頻道的影片
-
-#### Scenario: 過濾已下載影片
-
-- **WHEN** 候選池建構完成
-- **THEN** 系統 MUST 移除已存在於使用者下載輸出資料夾的影片（依檔名 stem 比對）
-
-#### Scenario: 相關性過濾（profile.keywords 非空時）
-
-- **WHEN** 候選池建構完成且 profile 已萃取出至少 1 個 keyword
-- **THEN** 系統 MUST 移除「title 與 channel_title 都未命中任何 keyword、且沒有 `_matched_keyword` 標記」的影片
-- **AND** 此過濾不適用於沒有訂閱頻道或 keyword 萃取失敗（空集合）的使用者
-
-#### Scenario: 語言過濾（profile.lang ≠ "mixed" 時）
-
-- **WHEN** 候選池建構完成且 profile.lang 為 `"cjk"` 或 `"latin"`
-- **THEN** 系統 MUST 移除「title 與 channel_title 主要語言皆與 profile.lang 不符」的影片
-- **AND** title 或 channel_title 任一處為 `"mixed"` 視為符合（保留邊界情況）
-- **AND** profile.lang 為 `"mixed"` 時不施加此過濾
-
 ### Requirement: 候選排序與頻道多樣性
 
 系統 SHALL 在候選池建構完成後依公式 `recency × view_velocity × keyword_hit` 排序，並施加多樣性約束：每個頻道最多保留 `_DISCOVERY_MAX_PER_CHANNEL`（2）部影片；此外於組頁時施加 **per-category 多樣性閘門**，限制單一 category 在可見頁面的佔比（取樣或上限），避免高 view_velocity 的單一熱門類別洗版。多樣性閘門 MUST 為保守設計：當候選不足時不強制補滿，且單峰帳號（候選幾乎同一 category）不得因閘門被大量縮減。
@@ -128,72 +81,7 @@ Defines the「🔍 同類新頻道」discovery feature — a backend pipeline + 
 - **THEN** per-category 多樣性閘門 MUST NOT 大量移除候選或清空 feed
 - **AND** 該帳號可見的候選數量與未加閘門時相當
 
-### Requirement: 分頁與「換一批」
-
-系統 SHALL 支援前端「換一批」操作：優先消費 cache 中剩餘的候選影片，僅在 cache 耗盡時才重新打 API；**換一批時 MUST NOT 重新分析 profile**（profile 是 sticky 的，重新分析需明確透過「🔁 重新分析」按鈕觸發）。
-
-#### Scenario: 換一批消費 cache
-
-- **WHEN** 前端帶 `cursor` query 呼叫 `GET /discovery/similar-channels?cursor=<n>`
-- **AND** cache 內 cursor 後仍有候選影片
-- **THEN** backend 回傳下一頁影片（每頁預設 20 部）+ 新 cursor，**不**消耗 YouTube API 配額
-
-#### Scenario: 換一批 cache 耗盡只重撈候選
-
-- **WHEN** 前端「換一批」時 cache 內 cursor 後已無候選影片
-- **THEN** backend 使用既有 profile（記憶體或磁碟 cache）重新撈候選池（fast + full phase）
-- **AND** MUST NOT 重新呼叫 `subscriptions.list` 或 `channels.list` 分析訂閱
-- **AND** 配額計入 daily quota counter
-
-### Requirement: 一鍵訂閱
-
-系統 SHALL 移除「同類新頻道」影片卡片上的「➕ 訂閱」按鈕，改提供「👁 加入觀察名單」按鈕。卡片**不再因動作而淡出**；已加入觀察名單後按鈕變更為「✓ 已在觀察名單」並 disabled（單向動作，與「✓ 已訂閱」風格一致）。訂閱動作改由觀察名單面板承擔。
-
-#### Scenario: 加入觀察名單
-
-- **WHEN** 使用者在某影片卡片點擊「👁 加入觀察名單」
-- **THEN** 該頻道 (`channel_id`、`title`、`thumbnail`) 加入觀察名單 store，`added_at` 為當下時間
-- **AND** 卡片留在列表中，不淡出、不移除
-- **AND** 該頻道後續所有出現在同類新頻道的卡片，按鈕 MUST 顯示為「✓ 已在觀察名單」且 disabled
-- **AND** 無 YouTube API 呼叫，無配額消耗
-
-#### Scenario: 已在觀察名單的頻道再次出現
-
-- **WHEN** 候選池 reload 後，某已在觀察名單的頻道又出現在列表
-- **THEN** 該頻道的卡片按鈕直接渲染為「✓ 已在觀察名單」並 disabled
-
-#### Scenario: 不再有訂閱失敗 toast 從此卡片觸發
-
-- **WHEN** 使用者在「同類新頻道」卡片點任何按鈕
-- **THEN** MUST NOT 呼叫 `subscriptions.insert`
-- **AND** MUST NOT 出現「訂閱成功」「訂閱失敗」相關 toast（這些 toast 改由觀察名單面板的「➕ 訂閱」動作觸發）
-
-### Requirement: Tab UI 整合
-
-系統 SHALL 在前端主介面新增獨立 tab「🔍 同類新頻道」，與既有「訂閱頻道」「熱門影片」「URL 下載」並列。
-
-#### Scenario: Tab 顯示載入進度
-
-- **WHEN** 使用者首次切到此 tab
-- **THEN** UI 顯示分階段進度提示（例：「分析訂閱中…」「找出興趣關鍵字…」「挖掘相似頻道…」）
-- **AND** fast phase 結果一回來就 render 第一批卡片
-- **AND** full phase 結果在背景補完，使用者可看到列表逐步填充
-
-#### Scenario: 卡片視覺與其他 tab 一致
-
-- **WHEN** 此 tab 顯示影片卡片
-- **THEN** 卡片視覺結構與既有 trending / 訂閱影片卡片一致（縮圖、標題、頻道名、發布時間、時長、勾選下載按鈕）
-- **AND** 額外顯示「👁 加入觀察名單」按鈕與「★新頻道」badge
-
-### Requirement: 配額計數整合
-
-系統 SHALL 將所有 YouTube API 呼叫消耗計入既有 daily quota counter（`backend/main.py` 的 `consume_quota`）。
-
-#### Scenario: 完整 profile build 配額計入
-
-- **WHEN** 完整 profile + 候選池 rebuild 執行
-- **THEN** 所有 `subscriptions.list`、`channels.list`、`videos.list`、`search.list`、`playlistItems.list` 呼叫均依 YouTube 官方 cost 規格累計入今日 quota
-- **AND** 若累計超過每日上限（10000），新呼叫拒絕並回傳明確錯誤
+## ADDED Requirements
 
 ### Requirement: 關鍵字數量 per-account 設定
 

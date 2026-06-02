@@ -208,6 +208,7 @@ import { useNormalizeStore } from '@/stores/normalize'
 import { useDriveUploadStore } from '@/stores/driveUpload'
 import { useQuotaStore } from '@/stores/quota'
 import { useWatchlistStore } from '@/stores/watchlist'
+import { useDiscoveryStore } from '@/stores/discovery'
 import ChannelVideos from '@/components/ChannelVideos.vue'
 import LatestVideosFeed from '@/components/LatestVideosFeed.vue'
 import TrendingVideosFeed from '@/components/TrendingVideosFeed.vue'
@@ -232,6 +233,7 @@ const normalizeStore = useNormalizeStore()
 const driveUploadStore = useDriveUploadStore()
 const quota = useQuotaStore()
 const watchlist = useWatchlistStore()
+const discovery = useDiscoveryStore()
 const quotaUsedDisplay = computed(() => quota.used === null ? '—' : quota.used)
 const channels = ref<Channel[]>([])
 const searchQuery = ref('')
@@ -366,6 +368,7 @@ async function handleSwitch(email: string) {
   error.value = ''
   try {
     await auth.switchAccount(email)
+    discovery.reset()
     // 重新載入該帳號的訂閱清單
     selectedChannelId.value = null
     activeView.value = 'none'

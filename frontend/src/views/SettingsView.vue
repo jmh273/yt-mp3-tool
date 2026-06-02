@@ -26,6 +26,11 @@
         <span v-if="latestHoursError" class="field-error">{{ latestHoursError }}</span>
       </label>
       <label>
+        同類新頻道關鍵字數量
+        <input v-model.number="discoveryKeywordTopN" type="number" min="1" max="100" />
+        <small class="hint">僅在重新分析同類新頻道後生效；每多 1 個關鍵字，重新分析時約多一次 search.list（約 100 配額）。</small>
+      </label>
+      <label>
         最新影片最短長度 (分鐘)
         <input v-model.number="minDuration" type="number" min="0" />
       </label>
@@ -67,6 +72,7 @@ import { apiGet, apiPut } from '@/api'
 const outputPath = ref('')
 const videosPerChannel = ref(5)
 const latestHours = ref(24)
+const discoveryKeywordTopN = ref(8)
 const minDuration = ref(3)
 const maxDuration = ref(60)
 const normalizeTargetDb = ref(89)
@@ -82,6 +88,7 @@ onMounted(async () => {
     output_path: string
     videos_per_channel: number
     latest_hours: number
+    discovery_keyword_top_n: number
     min_duration_minutes: number
     max_duration_minutes: number
     normalize_target_db: number
@@ -90,6 +97,7 @@ onMounted(async () => {
   outputPath.value = data.output_path
   videosPerChannel.value = data.videos_per_channel
   latestHours.value = data.latest_hours ?? 24
+  discoveryKeywordTopN.value = data.discovery_keyword_top_n ?? 8
   minDuration.value = data.min_duration_minutes ?? 3
   maxDuration.value = data.max_duration_minutes ?? 60
   normalizeTargetDb.value = data.normalize_target_db ?? 89
@@ -126,6 +134,7 @@ async function save() {
       output_path: outputPath.value,
       videos_per_channel: videosPerChannel.value,
       latest_hours: latestHours.value,
+      discovery_keyword_top_n: discoveryKeywordTopN.value,
       min_duration_minutes: minDuration.value,
       max_duration_minutes: maxDuration.value,
       normalize_target_db: normalizeTargetDb.value,

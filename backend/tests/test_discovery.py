@@ -157,6 +157,85 @@ def test_score_and_rank_keyword_boost():
     assert ranked[0]["video_id"] == "hit"
 
 
+def test_select_profile_keywords_multimodal_round_robin_represents_categories():
+    from collections import Counter
+
+    keyword_counter = Counter({
+        "ai": 10,
+        "llm": 9,
+        "stocks": 8,
+        "etf": 7,
+        "fitness": 6,
+        "travel": 5,
+    })
+    keyword_categories = {
+        "ai": "28",
+        "llm": "28",
+        "stocks": "25",
+        "etf": "25",
+        "fitness": "17",
+        "travel": "19",
+    }
+
+    selected = main._select_profile_keywords(keyword_counter, keyword_categories, 4)
+
+    assert selected == ["ai", "stocks", "fitness", "travel"]
+
+
+def test_select_profile_keywords_single_or_dual_category_matches_most_common():
+    from collections import Counter
+
+    keyword_counter = Counter({
+        "ai": 10,
+        "llm": 9,
+        "stocks": 8,
+        "etf": 7,
+    })
+
+    selected = main._select_profile_keywords(
+        keyword_counter,
+        {"ai": "28", "llm": "28", "stocks": "25", "etf": "25"},
+        3,
+    )
+
+    assert selected == ["ai", "llm", "stocks"]
+
+
+def test_select_profile_keywords_legacy_profile_without_categories_is_flat():
+    from collections import Counter
+
+    keyword_counter = Counter({
+        "ai": 10,
+        "llm": 9,
+        "stocks": 8,
+        "etf": 7,
+    })
+
+    selected = main._select_profile_keywords(keyword_counter, {}, 3)
+
+    assert selected == ["ai", "llm", "stocks"]
+
+
+def test_full_phase_legacy_profile_ignores_changed_keyword_top_n_setting(monkeypatch):
+    main.SETTINGS_FILE.write_text(
+        '{"discovery_keyword_top_n": 1}',
+        encoding="utf-8",
+    )
+    mock_yt = MagicMock()
+    mock_yt.search().list().execute.return_value = {"items": []}
+    mock_yt.reset_mock()
+    monkeypatch.setattr(main, "build", lambda *args, **kwargs: mock_yt)
+    profile = {
+        "keywords": ["alpha", "beta", "gamma"],
+        "subscribed_channel_ids": set(),
+    }
+
+    out = main._full_phase_candidates(_mock_valid_creds(), profile)
+
+    assert out == []
+    assert mock_yt.search().list.call_count == 3
+
+
 # ── _filter_candidates unit tests ─────────────────────────────────────────────
 
 
@@ -226,6 +305,65 @@ def test_score_channel_title_keyword_hit_boosts_rank():
     profile = {"keywords": ["美股", "投資"], "subscribed_channel_ids": set()}
     ranked = main._score_and_rank(videos, profile)
     assert ranked[0]["video_id"] == "v_chmatch"
+
+
+def test_score_and_rank_multimodal_category_gate_prevents_one_category_washout(monkeypatch):
+    from datetime import datetime, timezone, timedelta
+
+    monkeypatch.setattr(main, "_DISCOVERY_PAGE_SIZE", 6)
+    now = datetime.now(timezone.utc)
+    videos = []
+    for i in range(10):
+        videos.append({
+            "video_id": f"tech_{i}",
+            "title": f"ai video {i}",
+            "channel_id": f"UC_tech_{i}",
+            "published": (now - timedelta(minutes=i)).isoformat().replace("+00:00", "Z"),
+            "view_count": 1_000_000 - i,
+            "category_id": "28",
+        })
+    for i, category_id in enumerate(["25", "17"]):
+        videos.append({
+            "video_id": f"other_{category_id}",
+            "title": f"other video {category_id}",
+            "channel_id": f"UC_other_{category_id}",
+            "published": (now - timedelta(days=3 + i)).isoformat().replace("+00:00", "Z"),
+            "view_count": 100,
+            "category_id": category_id,
+        })
+    profile = {"keywords": [], "categories": ["28", "25", "17"], "subscribed_channel_ids": set()}
+
+    ranked = main._score_and_rank(videos, profile)
+
+    first_page_categories = [v["category_id"] for v in ranked[:6]]
+    assert len(ranked) == len(videos)
+    assert first_page_categories.count("28") < 6
+    assert "25" in first_page_categories
+    assert "17" in first_page_categories
+    assert [v["video_id"] for v in ranked if v["category_id"] == "28"] == [f"tech_{i}" for i in range(10)]
+
+
+def test_score_and_rank_single_category_gate_is_noop(monkeypatch):
+    from datetime import datetime, timezone, timedelta
+
+    monkeypatch.setattr(main, "_DISCOVERY_PAGE_SIZE", 6)
+    now = datetime.now(timezone.utc)
+    videos = [
+        {
+            "video_id": f"v{i}",
+            "title": f"title {i}",
+            "channel_id": f"UC_{i}",
+            "published": (now - timedelta(minutes=i)).isoformat().replace("+00:00", "Z"),
+            "view_count": 1_000_000 - i,
+            "category_id": "28",
+        }
+        for i in range(8)
+    ]
+    profile = {"keywords": [], "categories": ["28"], "subscribed_channel_ids": set()}
+
+    ranked = main._score_and_rank(videos, profile)
+
+    assert [v["video_id"] for v in ranked] == [f"v{i}" for i in range(8)]
 
 
 def test_filter_drops_downloaded(monkeypatch, tmp_path):
@@ -676,6 +814,47 @@ async def test_discovery_force_rebuild_re_analyzes(client, monkeypatch):
     summary = r.json()["profile_summary"]
     assert "new" in summary["keywords"]
     assert summary["lang"] == "latin"
+
+
+async def test_discovery_force_rebuild_applies_keyword_top_n_setting(client, monkeypatch):
+    monkeypatch.setattr(main, "_downloaded_stems_all", lambda: set())
+    main.SETTINGS_FILE.write_text(
+        '{"discovery_keyword_top_n": 3}',
+        encoding="utf-8",
+    )
+
+    subs = [_make_subscription_item(f"UC_sub_{i}") for i in range(4)]
+    sub_meta = [
+        _make_channel_metadata("UC_sub_0", "Alpha Channel", "alpha"),
+        _make_channel_metadata("UC_sub_1", "Beta Channel", "beta"),
+        _make_channel_metadata("UC_sub_2", "Gamma Channel", "gamma"),
+        _make_channel_metadata("UC_sub_3", "Delta Channel", "delta"),
+    ]
+    sub_latest = [
+        _make_video_item("vs0", channel_id="UC_sub_0", category_id="28"),
+        _make_video_item("vs1", channel_id="UC_sub_1", category_id="25"),
+        _make_video_item("vs2", channel_id="UC_sub_2", category_id="17"),
+        _make_video_item("vs3", channel_id="UC_sub_3", category_id="19"),
+    ]
+    mock_yt = _build_full_youtube_mock(
+        subs,
+        sub_meta,
+        sub_latest,
+        fast_videos=[],
+        search_channel_ids=[],
+    )
+    mock_yt.reset_mock()
+
+    with patch("main.load_credentials", return_value=_mock_valid_creds()), \
+         patch("main._get_current_email", return_value="user_a@example.com"), \
+         patch("main.build", return_value=mock_yt):
+        async with client as c:
+            r = await c.get("/discovery/similar-channels?phase=full&force_rebuild=true")
+
+    assert r.status_code == 200
+    summary = r.json()["profile_summary"]
+    assert len(summary["keywords"]) == 3
+    assert mock_yt.search().list.call_count == 3
 
 
 async def test_discovery_no_auto_rebuild_on_cursor_exhaust(client, monkeypatch):

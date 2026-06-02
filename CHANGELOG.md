@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.16.0 - 2026-06-02
+
+- Added a per-account「同類新頻道」keyword-count setting (`discovery_keyword_top_n`, default 8). The value is frozen into each account's discovery profile and only re-applied when you click「🔁 重新分析」, so changing it never reshapes an existing profile on a normal load or「換一批」. Each extra keyword costs roughly one more `search.list` call (~100 quota), noted in the settings hint.
+- Changed discovery keyword selection from a flat global-frequency top-N to category-spread (round-robin across the subscription category histogram), so broad multi-interest accounts get keywords representing each interest instead of only the dominant cluster; focused single-category accounts stay equivalent to the previous flat behavior.
+- Added a conservative per-category diversity gate when assembling the candidate feed, so a single hot category can no longer wash out a page; it re-interleaves rather than dropping videos and is a no-op for single-category accounts.
+- Fixed account switching not clearing the「同類新頻道」feed: the discovery store now resets on switch and restores the new account's keywords from its persisted profile without re-analysing subscriptions (cards are re-fetched).
+
 ## 0.15.0 - 2026-06-01
 
 - Added batch upload of a day's downloads to Google Drive: creates `<drive_root_folder>/<date-folder>/` in the current account's Drive, skips files already present, and streams per-file progress over SSE. First use prompts a one-time `drive.file` reauthorization.

@@ -90,6 +90,7 @@ DEFAULT_SETTINGS = {
     "output_path": str(pathlib.Path.home() / "Music" / "YT-MP3"),
     "videos_per_channel": 5,
     "latest_hours": 24,
+    "discovery_keyword_top_n": 8,
     "min_duration_minutes": 3,
     "max_duration_minutes": 60,
     "normalize_target_db": 89.0,
@@ -273,6 +274,7 @@ def enhance_and_filter_videos(
 _SETTINGS_RANGES = {
     "videos_per_channel": (int, 1, 20),
     "latest_hours": (int, 1, 168),
+    "discovery_keyword_top_n": (int, 1, 100),
     "min_duration_minutes": (int, 0, 10000),
     "max_duration_minutes": (int, 1, 10000),
     "normalize_target_db": ((int, float), 80.0, 100.0),
@@ -914,6 +916,7 @@ class SettingsUpdate(BaseModel):
     output_path: str | None = None
     videos_per_channel: int | None = None
     latest_hours: int | None = None
+    discovery_keyword_top_n: int | None = Field(default=None, ge=1, le=100)
     min_duration_minutes: int | None = None
     max_duration_minutes: int | None = None
     normalize_target_db: float | None = None
@@ -933,6 +936,8 @@ def update_settings(body: SettingsUpdate):
         if not (1 <= body.latest_hours <= 168):
             raise HTTPException(status_code=422, detail="latest_hours 必須介於 1 到 168 之間")
         settings["latest_hours"] = body.latest_hours
+    if body.discovery_keyword_top_n is not None:
+        settings["discovery_keyword_top_n"] = body.discovery_keyword_top_n
     if body.min_duration_minutes is not None:
         settings["min_duration_minutes"] = body.min_duration_minutes
     if body.max_duration_minutes is not None:
@@ -1058,6 +1063,62 @@ _DISCOVERY_REGION_CODE = "TW"
 # in-memory cache（key = email；生命週期 = backend process）
 discovery_cache: dict[str, dict] = {}
 
+
+def _discovery_keyword_top_n() -> int:
+    return int(load_settings().get("discovery_keyword_top_n", _DISCOVERY_KEYWORD_TOP_N))
+
+
+def _profile_keyword_top_n(profile: dict) -> int:
+    configured = profile.get("keyword_top_n")
+    if isinstance(configured, int) and configured > 0:
+        return configured
+    keywords = profile.get("keywords") or []
+    return len(keywords) or _DISCOVERY_KEYWORD_TOP_N
+
+
+def _select_profile_keywords(keyword_counter, keyword_categories: dict[str, str], top_n: int) -> list[str]:
+    flat = [kw for kw, _ in keyword_counter.most_common(top_n)]
+    category_count = len({cat for cat in keyword_categories.values() if cat})
+    if category_count <= 2:
+        return flat
+
+    from collections import defaultdict, deque
+
+    grouped: dict[str, deque[str]] = defaultdict(deque)
+    uncategorized: deque[str] = deque()
+    for kw, _ in keyword_counter.most_common():
+        cat = keyword_categories.get(kw)
+        if cat:
+            grouped[cat].append(kw)
+        else:
+            uncategorized.append(kw)
+
+    category_order = [
+        cat for cat, _ in sorted(
+            ((cat, sum(keyword_counter[kw] for kw in kws)) for cat, kws in grouped.items()),
+            key=lambda item: item[1],
+            reverse=True,
+        )
+    ]
+    selected: list[str] = []
+    while len(selected) < top_n and category_order:
+        progressed = False
+        for cat in list(category_order):
+            if len(selected) >= top_n:
+                break
+            if grouped[cat]:
+                selected.append(grouped[cat].popleft())
+                progressed = True
+            else:
+                category_order.remove(cat)
+        if not progressed:
+            break
+
+    while len(selected) < top_n and uncategorized:
+        selected.append(uncategorized.popleft())
+
+    return selected
+
 # 中英文 stopwords（精簡列表，足以濾掉 channel title/keywords 的雜訊）
 _DISCOVERY_STOPWORDS = {
     # English
@@ -1156,6 +1217,8 @@ def _build_user_profile(creds: Credentials, email: str) -> dict:
     profile: dict = {
         "subscribed_channel_ids": set(subscribed_ids),
         "keywords": [],
+        "keyword_top_n": _discovery_keyword_top_n(),
+        "keyword_categories": {},
         "categories": [],
         "lang": "mixed",
         "analyzed_at": datetime.now(timezone.utc).isoformat(),
@@ -1176,6 +1239,7 @@ def _build_user_profile(creds: Credentials, email: str) -> dict:
 
     # 2) 頻道 metadata 批次抓 → keywords + 語言偵測
     keyword_counter: Counter = Counter()
+    channel_keywords: dict[str, list[str]] = {}
     sub_channel_titles: list[str] = []
     for start in range(0, len(subscribed_ids), 50):
         batch = subscribed_ids[start: start + 50]
@@ -1186,14 +1250,19 @@ def _build_user_profile(creds: Credentials, email: str) -> dict:
         ).execute()
         consume_quota(_QUOTA_CHANNELS_LIST)
         for ch in resp.get("items", []):
+            cid = ch.get("id")
             title = (ch.get("snippet", {}) or {}).get("title", "")
             if title:
                 sub_channel_titles.append(title)
-            for kw in _extract_channel_keywords(ch):
+            kws = _extract_channel_keywords(ch)
+            if cid:
+                channel_keywords[cid] = kws
+            for kw in kws:
                 keyword_counter[kw] += 1
 
     # 3) Category 直方圖：從每個訂閱頻道最新影片的 categoryId 統計
     latest_video_ids: list[str] = []
+    latest_video_channels: dict[str, str] = {}
     for cid in subscribed_ids:
         if not cid.startswith("UC"):
             continue
@@ -1210,10 +1279,12 @@ def _build_user_profile(creds: Credentials, email: str) -> dict:
                 vid = items[0].get("snippet", {}).get("resourceId", {}).get("videoId")
                 if vid:
                     latest_video_ids.append(vid)
+                    latest_video_channels[vid] = cid
         except Exception:
             continue
 
     category_counter: Counter = Counter()
+    channel_categories: dict[str, str] = {}
     for start in range(0, len(latest_video_ids), 50):
         batch = latest_video_ids[start: start + 50]
         try:
@@ -1226,10 +1297,31 @@ def _build_user_profile(creds: Credentials, email: str) -> dict:
                 cat = v.get("snippet", {}).get("categoryId")
                 if cat:
                     category_counter[cat] += 1
+                    cid = (v.get("snippet", {}) or {}).get("channelId") or latest_video_channels.get(v.get("id"))
+                    if cid:
+                        channel_categories[cid] = cat
         except Exception:
             continue
 
-    profile["keywords"] = [kw for kw, _ in keyword_counter.most_common(_DISCOVERY_KEYWORD_TOP_N)]
+    keyword_category_counter: dict[str, Counter] = {}
+    for cid, kws in channel_keywords.items():
+        cat = channel_categories.get(cid)
+        if not cat:
+            continue
+        for kw in kws:
+            keyword_category_counter.setdefault(kw, Counter())[cat] += 1
+    keyword_categories = {
+        kw: cats.most_common(1)[0][0]
+        for kw, cats in keyword_category_counter.items()
+        if cats
+    }
+
+    profile["keyword_categories"] = keyword_categories
+    profile["keywords"] = _select_profile_keywords(
+        keyword_counter,
+        keyword_categories,
+        _discovery_keyword_top_n(),
+    )
     profile["categories"] = [c for c, _ in category_counter.most_common(_DISCOVERY_CATEGORY_TOP_N)]
     profile["lang"] = _detect_profile_lang(sub_channel_titles)
 
@@ -1274,6 +1366,7 @@ def _video_payload_from_videos_item(item: dict) -> dict | None:
         "url": f"https://www.youtube.com/watch?v={video_id}",
         "channel_id": channel_id,
         "channel_title": channel_title,
+        "category_id": snippet.get("categoryId", ""),
         "duration_seconds": parse_iso_duration(duration_iso),
         "view_count": view_count,
     }
@@ -1322,7 +1415,7 @@ def _full_phase_candidates(creds: Credentials, profile: dict) -> list[dict]:
 
     # 找候選 channel ids（每個 keyword 一次 search.list）
     candidate_channels: dict[str, str] = {}  # channel_id → matched keyword
-    for kw in keywords[:_DISCOVERY_KEYWORD_TOP_N]:
+    for kw in keywords[:_profile_keyword_top_n(profile)]:
         try:
             resp = youtube.search().list(
                 part="snippet",
@@ -1401,6 +1494,8 @@ def _save_profile_to_disk(email: str, profile: dict) -> None:
     serializable = {
         "subscribed_channel_ids": sorted(profile.get("subscribed_channel_ids", set())),
         "keywords": list(profile.get("keywords", [])),
+        "keyword_top_n": profile.get("keyword_top_n"),
+        "keyword_categories": dict(profile.get("keyword_categories", {})),
         "categories": list(profile.get("categories", [])),
         "lang": profile.get("lang", "mixed"),
         "analyzed_at": profile.get("analyzed_at"),
@@ -1426,6 +1521,8 @@ def _load_profile_from_disk(email: str) -> dict | None:
     return {
         "subscribed_channel_ids": set(raw.get("subscribed_channel_ids", [])),
         "keywords": list(raw.get("keywords", [])),
+        "keyword_top_n": raw.get("keyword_top_n"),
+        "keyword_categories": dict(raw.get("keyword_categories", {})),
         "categories": list(raw.get("categories", [])),
         "lang": raw.get("lang", "mixed"),
         "analyzed_at": raw.get("analyzed_at"),
@@ -1502,7 +1599,7 @@ def _filter_candidates(videos: list[dict], profile: dict) -> list[dict]:
     額外要求影片必須與關鍵字相關；當 profile.lang 非 'mixed' 時，限制候選為同語言。"""
     subscribed = profile.get("subscribed_channel_ids", set())
     downloaded = _downloaded_stems_all()
-    keywords = set(profile.get("keywords") or [])
+    keywords = set((profile.get("keywords") or [])[:_profile_keyword_top_n(profile)])
     require_keyword_match = bool(keywords)
     target_lang = profile.get("lang", "mixed") or "mixed"
     seen_ids: set[str] = set()
@@ -1528,12 +1625,45 @@ def _filter_candidates(videos: list[dict], profile: dict) -> list[dict]:
     return out
 
 
+def _apply_category_gate(ranked: list[dict], profile: dict) -> list[dict]:
+    profile_categories = [c for c in (profile.get("categories") or []) if c]
+    if len(set(profile_categories)) <= 2:
+        return ranked
+
+    video_categories = [v.get("category_id") for v in ranked if v.get("category_id")]
+    if len(set(video_categories)) <= 2:
+        return ranked
+
+    from collections import defaultdict, deque
+
+    grouped: dict[str, deque[dict]] = defaultdict(deque)
+    category_order: list[str] = []
+    for v in ranked:
+        cat = v.get("category_id") or "_uncategorized"
+        if cat not in grouped:
+            category_order.append(cat)
+        grouped[cat].append(v)
+
+    out: list[dict] = []
+    while len(out) < len(ranked) and category_order:
+        progressed = False
+        for cat in list(category_order):
+            if grouped[cat]:
+                out.append(grouped[cat].popleft())
+                progressed = True
+            else:
+                category_order.remove(cat)
+        if not progressed:
+            break
+    return out
+
+
 def _score_and_rank(videos: list[dict], profile: dict) -> list[dict]:
     """排序公式：recency × view_velocity × keyword_hit；每頻道最多 _DISCOVERY_MAX_PER_CHANNEL 部。"""
     import math
     from datetime import datetime, timezone
 
-    keywords = set(profile.get("keywords") or [])
+    keywords = set((profile.get("keywords") or [])[:_profile_keyword_top_n(profile)])
     now = datetime.now(timezone.utc)
 
     def score(v: dict) -> float:
@@ -1575,7 +1705,7 @@ def _score_and_rank(videos: list[dict], profile: dict) -> list[dict]:
             continue
         per_channel[cid] += 1
         out.append(v)
-    return out
+    return _apply_category_gate(out, profile)
 
 
 def _merge_candidates(fast: list[dict], full: list[dict], profile: dict) -> list[dict]:

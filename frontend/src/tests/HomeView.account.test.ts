@@ -1,6 +1,7 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { mount, flushPromises } from '@vue/test-utils'
 import { useAuthStore } from '@/stores/auth'
+import { useDiscoveryStore } from '@/stores/discovery'
 
 // api 全 mock：用 path 路由到可變的後端狀態，方便在測試中途模擬新帳號出現
 vi.mock('@/api', () => ({
@@ -101,5 +102,31 @@ describe('HomeView 新增帳號', () => {
     // 沒有偵測到新帳號，不應重新載入訂閱清單
     expect(subscriptionsCallCount()).toBe(1)
     expect(wrapper.findAll('.channel-card')).toHaveLength(3)
+  })
+
+  it('switching accounts resets discovery state', async () => {
+    const { wrapper, auth } = await mountLoggedIn()
+    auth.accounts = ['a@example.com', 'b@example.com']
+    const discovery = useDiscoveryStore()
+    discovery.videos = [{ video_id: 'old', title: 'old', channel_id: 'UCA1' } as any]
+    discovery.cursor = 20
+    discovery.hasMore = true
+    discovery.profileSummary = {
+      subscribed_count: 1,
+      keywords: ['old'],
+      categories: ['28'],
+    }
+
+    subsChannels = [ch('UCB1')]
+    await wrapper.find('.account-toggle').trigger('click')
+    const bAccount = wrapper.findAll('.account-email').find((node) => node.text() === 'b@example.com')
+    expect(bAccount).toBeTruthy()
+    await bAccount!.trigger('click')
+    await flushPromises()
+
+    expect(discovery.videos).toEqual([])
+    expect(discovery.cursor).toBe(0)
+    expect(discovery.hasMore).toBe(false)
+    expect(discovery.profileSummary).toBeNull()
   })
 })
