@@ -36,6 +36,7 @@ async def test_get_settings_defaults(client):
     assert "output_path" in data
     assert data["drive_root_folder"] == "YT-MP3"
     assert data["download_concurrency"] == 3
+    assert data["drive_upload_concurrency"] == 3
 
 
 # ── PUT /settings ─────────────────────────────────────────────────────────────
@@ -102,6 +103,27 @@ async def test_put_settings_download_concurrency_too_low(client):
 async def test_put_settings_download_concurrency_too_high(client):
     async with client as c:
         r = await c.put("/settings", json={"download_concurrency": 99})
+    assert r.status_code == 422
+
+
+async def test_put_settings_drive_upload_concurrency_valid(client):
+    async with client as c:
+        r = await c.put("/settings", json={"drive_upload_concurrency": 4})
+        r2 = await c.get("/settings")
+    assert r.status_code == 200
+    assert r.json()["drive_upload_concurrency"] == 4
+    assert r2.json()["drive_upload_concurrency"] == 4
+
+
+async def test_put_settings_drive_upload_concurrency_too_low(client):
+    async with client as c:
+        r = await c.put("/settings", json={"drive_upload_concurrency": 0})
+    assert r.status_code == 422
+
+
+async def test_put_settings_drive_upload_concurrency_too_high(client):
+    async with client as c:
+        r = await c.put("/settings", json={"drive_upload_concurrency": 99})
     assert r.status_code == 422
 
 
@@ -238,6 +260,23 @@ def test_load_settings_does_not_reset_out_of_range_concurrency():
     s = main.load_settings()
     assert s["download_concurrency"] == 99
     assert main._resolve_concurrency(s) == 8
+
+
+def test_resolve_drive_upload_concurrency_clamps_and_falls_back():
+    assert main._resolve_drive_upload_concurrency({}) == 3
+    assert main._resolve_drive_upload_concurrency({"drive_upload_concurrency": 0}) == 1
+    assert main._resolve_drive_upload_concurrency({"drive_upload_concurrency": 99}) == 8
+    assert main._resolve_drive_upload_concurrency({"drive_upload_concurrency": 5}) == 5
+    assert main._resolve_drive_upload_concurrency({"drive_upload_concurrency": "abc"}) == 3
+    assert main._resolve_drive_upload_concurrency({"drive_upload_concurrency": None}) == 3
+
+
+def test_load_settings_does_not_reset_out_of_range_drive_upload_concurrency():
+    main.SETTINGS_FILE.parent.mkdir(parents=True, exist_ok=True)
+    main.SETTINGS_FILE.write_text(json.dumps({"drive_upload_concurrency": 99}))
+    s = main.load_settings()
+    assert s["drive_upload_concurrency"] == 99
+    assert main._resolve_drive_upload_concurrency(s) == 8
 
 
 def test_load_settings_handles_corrupt_json():

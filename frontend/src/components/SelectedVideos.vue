@@ -99,6 +99,7 @@
 import { computed, onMounted, ref, watch } from 'vue'
 import { apiGet } from '@/api'
 import { useDownloadStore } from '@/stores/download'
+import { joinPath, rolloverDatePrefix, todayYyyymmdd } from '@/utils/dateFolder'
 
 const download = useDownloadStore()
 
@@ -140,20 +141,6 @@ const seqConflict = computed<number[]>(() => {
   return existingSeqs.value.filter((n) => range.has(n))
 })
 
-function todayYyyymmdd(): string {
-  const d = new Date()
-  const y = d.getFullYear()
-  const m = String(d.getMonth() + 1).padStart(2, '0')
-  const day = String(d.getDate()).padStart(2, '0')
-  return `${y}${m}${day}`
-}
-
-function joinPath(base: string, sub: string): string {
-  if (!base) return sub
-  const sep = base.includes('\\') ? '\\' : '/'
-  return `${base.replace(/[\\/]+$/, '')}${sep}${sub}`
-}
-
 function formatPad(n: number): string {
   const width = Math.max(startSeqInput.value.length || 2, String(n).length)
   return String(n).padStart(width, '0')
@@ -181,7 +168,10 @@ async function loadSettings() {
     // ignore
   }
   if (!download.targetDirPath) {
-    download.targetDirPath = joinPath(outputPath.value, download.lastWorkDirName || todayYyyymmdd())
+    const base = download.lastWorkDirName
+      ? rolloverDatePrefix(download.lastWorkDirName)
+      : todayYyyymmdd()
+    download.targetDirPath = joinPath(outputPath.value, base)
   }
 }
 

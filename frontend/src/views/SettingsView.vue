@@ -61,6 +61,11 @@
         <input data-testid="download-concurrency" v-model.number="concurrency" type="number" min="1" max="8" />
         <small class="hint">套用於下載與音量正規化；建議 SSD 使用 3，較慢硬碟可調低。</small>
       </label>
+      <label>
+        Drive 上傳同時處理數量
+        <input data-testid="drive-upload-concurrency" v-model.number="driveUploadConcurrency" type="number" min="1" max="8" />
+        <small class="hint">Drive 上傳同時處理數量；建議 3，網路或 API 較不穩時可調低。</small>
+      </label>
       <button @click="save" :disabled="saving || !!latestHoursError || !!normalizeTargetDbError">
         {{ saving ? '儲存中...' : '儲存' }}
       </button>
@@ -83,6 +88,7 @@ const maxDuration = ref(60)
 const normalizeTargetDb = ref(89)
 const driveRootFolder = ref('YT-MP3')
 const concurrency = ref(3)
+const driveUploadConcurrency = ref(3)
 const latestHoursError = ref('')
 const normalizeTargetDbError = ref('')
 const saving = ref(false)
@@ -100,6 +106,7 @@ onMounted(async () => {
     normalize_target_db: number
     drive_root_folder: string
     download_concurrency: number
+    drive_upload_concurrency: number
   }>('/settings')
   outputPath.value = data.output_path
   videosPerChannel.value = data.videos_per_channel
@@ -110,6 +117,7 @@ onMounted(async () => {
   normalizeTargetDb.value = data.normalize_target_db ?? 89
   driveRootFolder.value = data.drive_root_folder ?? 'YT-MP3'
   concurrency.value = data.download_concurrency ?? 3
+  driveUploadConcurrency.value = data.drive_upload_concurrency ?? 3
 })
 
 function validateLatestHours() {
@@ -148,6 +156,7 @@ async function save() {
       normalize_target_db: normalizeTargetDb.value,
       drive_root_folder: driveRootFolder.value,
       download_concurrency: concurrency.value,
+      drive_upload_concurrency: driveUploadConcurrency.value,
     })
     saved.value = true
   } catch (e: any) {

@@ -96,6 +96,7 @@ DEFAULT_SETTINGS = {
     "normalize_target_db": 89.0,
     "drive_root_folder": "YT-MP3",
     "download_concurrency": 3,
+    "drive_upload_concurrency": 3,
     "quota_used": 0,
     "quota_date": "",
 }
@@ -923,6 +924,7 @@ class SettingsUpdate(BaseModel):
     normalize_target_db: float | None = None
     drive_root_folder: str | None = None
     download_concurrency: int | None = Field(default=None, ge=1, le=8)
+    drive_upload_concurrency: int | None = Field(default=None, ge=1, le=8)
 
 
 @app.put("/settings")
@@ -955,6 +957,8 @@ def update_settings(body: SettingsUpdate):
         settings["drive_root_folder"] = folder
     if body.download_concurrency is not None:
         settings["download_concurrency"] = body.download_concurrency
+    if body.drive_upload_concurrency is not None:
+        settings["drive_upload_concurrency"] = body.drive_upload_concurrency
     save_settings(settings)
     return settings
 
@@ -2273,6 +2277,15 @@ def _resolve_concurrency(settings: dict) -> int:
         return 3
 
 
+def _resolve_drive_upload_concurrency(settings: dict) -> int:
+    """Read drive_upload_concurrency from settings, clamp to 1..8, fallback 3 on missing/invalid."""
+    raw = settings.get("drive_upload_concurrency", 3)
+    try:
+        return max(1, min(8, int(raw)))
+    except (TypeError, ValueError):
+        return 3
+
+
 def run_download(
     videos: list[dict],
     output_path: str,
@@ -2754,7 +2767,7 @@ def _media_mimetype(path: pathlib.Path) -> str:
     return "video/mp4" if path.suffix.lower() == ".mp4" else "audio/mpeg"
 
 
-def run_drive_upload_batch(task_id: str, directory: pathlib.Path, service, root_folder: str):
+def run_drive_upload_batch(task_id: str, directory: pathlib.Path, service, root_folder: str, concurrency: int = 1):
     state = drive_upload_progress.setdefault(task_id, {
         "status": "running",
         "directory": str(directory),
@@ -2763,27 +2776,45 @@ def run_drive_upload_batch(task_id: str, directory: pathlib.Path, service, root_
             for p in _local_media_files(directory)
         },
     })
+
+    def upload_one(file_path: pathlib.Path, leaf_id: str, existing: set[str]) -> None:
+        item = state["items"][file_path.name]
+        if file_path.name in existing:
+            item["status"] = "skipped"
+            return
+        item["status"] = "uploading"
+        try:
+            svc = _build_drive_service()
+            media = MediaFileUpload(str(file_path), mimetype=_media_mimetype(file_path), resumable=False)
+            svc.files().create(
+                body={"name": file_path.name, "parents": [leaf_id]},
+                media_body=media,
+                fields="id",
+            ).execute()
+            item["status"] = "done"
+        except Exception as e:
+            item["status"] = "error"
+            item["error"] = _drive_error_detail(e)
+
     try:
         root_id = _ensure_drive_folder(service, root_folder, None)
         leaf_id = _ensure_drive_folder(service, directory.name, root_id)
         existing = _drive_file_names(service, leaf_id)
-        for file_path in _local_media_files(directory):
-            item = state["items"][file_path.name]
-            if file_path.name in existing:
-                item["status"] = "skipped"
-                continue
-            item["status"] = "uploading"
-            try:
-                media = MediaFileUpload(str(file_path), mimetype=_media_mimetype(file_path), resumable=False)
-                service.files().create(
-                    body={"name": file_path.name, "parents": [leaf_id]},
-                    media_body=media,
-                    fields="id",
-                ).execute()
-                item["status"] = "done"
-            except Exception as e:
-                item["status"] = "error"
-                item["error"] = _drive_error_detail(e)
+        files = _local_media_files(directory)
+        if concurrency <= 1 or len(files) <= 1:
+            for file_path in files:
+                upload_one(file_path, leaf_id, existing)
+        else:
+            async def _coordinate() -> None:
+                sem = asyncio.Semaphore(concurrency)
+
+                async def _one(file_path: pathlib.Path) -> None:
+                    async with sem:
+                        await asyncio.to_thread(upload_one, file_path, leaf_id, existing)
+
+                await asyncio.gather(*(_one(file_path) for file_path in files))
+
+            asyncio.run(_coordinate())
         state["status"] = "done"
     except Exception as e:
         detail = _drive_error_detail(e)
@@ -2826,8 +2857,9 @@ async def drive_upload_start(body: DriveUploadRequest):
     }
     service = _build_drive_service()
     root_folder = settings.get("drive_root_folder", "YT-MP3") or "YT-MP3"
+    concurrency = _resolve_drive_upload_concurrency(settings)
     loop = asyncio.get_event_loop()
-    loop.run_in_executor(None, run_drive_upload_batch, task_id, directory, service, root_folder)
+    loop.run_in_executor(None, run_drive_upload_batch, task_id, directory, service, root_folder, concurrency)
     return {"task_id": task_id}
 
 

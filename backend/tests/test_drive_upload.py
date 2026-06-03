@@ -1,4 +1,5 @@
 import json
+import threading
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
@@ -83,15 +84,18 @@ def test_run_drive_upload_batch_skips_existing_and_uploads_missing(tmp_path):
         {"files": [{"id": "leaf-id"}]},
         {"files": [{"name": "01_existing.mp3"}]},
     ]
-    files.create.return_value.execute.return_value = {"id": "uploaded-id"}
+    upload_service = MagicMock()
+    upload_files = upload_service.files.return_value
+    upload_files.create.return_value.execute.return_value = {"id": "uploaded-id"}
 
-    main.run_drive_upload_batch("task-1", directory, service, "YT-MP3")
+    with patch("main._build_drive_service", return_value=upload_service):
+        main.run_drive_upload_batch("task-1", directory, service, "YT-MP3")
 
     items = main.drive_upload_progress["task-1"]["items"]
     assert items["01_existing.mp3"]["status"] == "skipped"
     assert items["02_new.mp3"]["status"] == "done"
     upload_calls = [
-        call for call in files.create.call_args_list
+        call for call in upload_files.create.call_args_list
         if call.kwargs["body"].get("mimeType") != "application/vnd.google-apps.folder"
     ]
     assert len(upload_calls) == 1
@@ -110,9 +114,11 @@ def test_run_drive_upload_batch_uploads_mp4_with_video_mimetype(tmp_path):
         {"files": [{"id": "leaf-id"}]},
         {"files": []},
     ]
-    files.create.return_value.execute.return_value = {"id": "uploaded-id"}
+    upload_service = MagicMock()
+    upload_service.files.return_value.create.return_value.execute.return_value = {"id": "uploaded-id"}
 
-    with patch("main.MediaFileUpload") as mock_media:
+    with patch("main._build_drive_service", return_value=upload_service), \
+         patch("main.MediaFileUpload") as mock_media:
         main.run_drive_upload_batch("task-mp4", directory, service, "YT-MP3")
 
     uploaded_mimetypes = {
@@ -124,6 +130,105 @@ def test_run_drive_upload_batch_uploads_mp4_with_video_mimetype(tmp_path):
         "02_clip.mp4": "video/mp4",
     }
     assert main.drive_upload_progress["task-mp4"]["items"]["02_clip.mp4"]["status"] == "done"
+
+
+def test_run_drive_upload_batch_concurrent_respects_limit_and_uses_worker_services(tmp_path):
+    directory = tmp_path / "20260601_sports"
+    directory.mkdir()
+    for i in range(6):
+        (directory / f"{i:02d}_song.mp3").write_bytes(b"x")
+
+    setup_service = MagicMock()
+    setup_files = setup_service.files.return_value
+    setup_files.list.return_value.execute.side_effect = [
+        {"files": [{"id": "root-id"}]},
+        {"files": [{"id": "leaf-id"}]},
+        {"files": []},
+    ]
+
+    in_flight = 0
+    peak = 0
+    lock = threading.Lock()
+    release = threading.Event()
+    started = threading.Semaphore(0)
+    worker_services = []
+
+    def execute_upload():
+        nonlocal in_flight, peak
+        with lock:
+            in_flight += 1
+            peak = max(peak, in_flight)
+        started.release()
+        release.wait(timeout=5)
+        with lock:
+            in_flight -= 1
+        return {"id": "uploaded-id"}
+
+    def build_worker_service():
+        service = MagicMock()
+        service.files.return_value.create.return_value.execute.side_effect = execute_upload
+        worker_services.append(service)
+        return service
+
+    with patch("main._build_drive_service", side_effect=build_worker_service), \
+         patch("main.MediaFileUpload"):
+        t = threading.Thread(
+            target=main.run_drive_upload_batch,
+            args=("task-concurrent", directory, setup_service, "YT-MP3"),
+            kwargs={"concurrency": 3},
+        )
+        t.start()
+        for _ in range(3):
+            assert started.acquire(timeout=5)
+        assert started.acquire(timeout=0.3) is False
+        with lock:
+            assert peak == 3
+        release.set()
+        t.join(timeout=5)
+
+    assert peak == 3
+    assert len(worker_services) == 6
+    assert main.drive_upload_progress["task-concurrent"]["status"] == "done"
+    assert all(item["status"] == "done" for item in main.drive_upload_progress["task-concurrent"]["items"].values())
+
+
+def test_run_drive_upload_batch_concurrent_partial_failure_does_not_block_others(tmp_path):
+    directory = tmp_path / "20260601_sports"
+    directory.mkdir()
+    for name in ("01_ok.mp3", "02_bad.mp3", "03_ok.mp3"):
+        (directory / name).write_bytes(b"x")
+
+    setup_service = MagicMock()
+    setup_files = setup_service.files.return_value
+    setup_files.list.return_value.execute.side_effect = [
+        {"files": [{"id": "root-id"}]},
+        {"files": [{"id": "leaf-id"}]},
+        {"files": []},
+    ]
+
+    def build_worker_service():
+        service = MagicMock()
+
+        def fake_create(**kwargs):
+            if kwargs["body"]["name"] == "02_bad.mp3":
+                raise RuntimeError("upload boom")
+            result = MagicMock()
+            result.execute.return_value = {"id": "uploaded-id"}
+            return result
+
+        service.files.return_value.create.side_effect = fake_create
+        return service
+
+    with patch("main._build_drive_service", side_effect=build_worker_service), \
+         patch("main.MediaFileUpload"):
+        main.run_drive_upload_batch("task-partial", directory, setup_service, "YT-MP3", concurrency=3)
+
+    items = main.drive_upload_progress["task-partial"]["items"]
+    assert items["01_ok.mp3"]["status"] == "done"
+    assert items["02_bad.mp3"]["status"] == "error"
+    assert "upload boom" in items["02_bad.mp3"]["error"]
+    assert items["03_ok.mp3"]["status"] == "done"
+    assert main.drive_upload_progress["task-partial"]["status"] == "done"
 
 
 async def test_post_drive_upload_validates_directory_under_output_path(client, tmp_path):
@@ -144,6 +249,26 @@ async def test_post_drive_upload_validates_directory_under_output_path(client, t
     assert "task_id" in r.json()
     assert main.drive_upload_progress[r.json()["task_id"]]["items"]["01_song.mp3"]["status"] == "pending"
     assert mock_run.call_args.args[1] == batch.resolve()
+
+
+async def test_post_drive_upload_passes_resolved_concurrency(client, tmp_path):
+    out = tmp_path / "out"
+    batch = out / "20260601_sports"
+    batch.mkdir(parents=True)
+    (batch / "01_song.mp3").write_bytes(b"x")
+
+    with patch(
+        "main.load_settings",
+        return_value={"output_path": str(out), "drive_root_folder": "YT-MP3", "drive_upload_concurrency": 4},
+    ), patch("main.load_drive_credentials", return_value=MagicMock()), \
+         patch("main.build") as mock_build, \
+         patch("main.run_drive_upload_batch") as mock_run:
+        mock_build.return_value = MagicMock()
+        async with client as c:
+            r = await c.post("/drive/upload", json={"directory": str(batch)})
+
+    assert r.status_code == 200
+    assert mock_run.call_args.args[-1] == 4
 
 
 async def test_post_drive_upload_includes_mp4_items(client, tmp_path):
