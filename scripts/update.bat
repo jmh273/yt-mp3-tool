@@ -50,9 +50,11 @@ if "%LATEST_VERSION:~0,1%"=="v" set LATEST_VERSION=%LATEST_VERSION:~1%
 echo [update] Latest tag: %LATEST_TAG% (version %LATEST_VERSION%)
 
 REM -- read local version (if any) ---------------------------------------------
+REM PyInstaller 6.x onedir ships bundled datas (incl. _version.txt) under
+REM _internal\, not the bundle root, so look there.
 set LOCAL_VERSION=none
-if exist "%INSTALL_DIR%\_version.txt" (
-    for /f "usebackq tokens=*" %%v in ("%INSTALL_DIR%\_version.txt") do set LOCAL_VERSION=%%v
+if exist "%INSTALL_DIR%\_internal\_version.txt" (
+    for /f "usebackq tokens=*" %%v in ("%INSTALL_DIR%\_internal\_version.txt") do set LOCAL_VERSION=%%v
 )
 echo [update] Local version: %LOCAL_VERSION%
 
@@ -95,23 +97,39 @@ goto :wait_kill
 REM Extra grace period for Windows to release DLL handles after process exit
 ping -n 4 127.0.0.1 >nul
 
-REM -- extract over install dir -------------------------------------------------
-if not exist "%INSTALL_DIR%" mkdir "%INSTALL_DIR%"
-echo [update] Extracting over %INSTALL_DIR%...
-REM Use $ErrorActionPreference='Stop' + try/catch so non-terminating file-lock
-REM errors (e.g., DLL still loaded) propagate as exit code 1. The previous
-REM version's plain Expand-Archive only emitted warnings and returned 0,
-REM silently leaving partial extracts that corrupted the install.
+REM -- extract to a fresh staging dir (never locked) ---------------------------
+REM Extracting straight over the live install meant a single transiently-locked
+REM file (e.g. _internal\select.pyd briefly held by Defender / Search indexer
+REM right after the app exits) aborted the whole Expand-Archive and left a
+REM half-written, corrupt install. Instead we extract to a clean temp dir first.
+set STAGE=%DOWNLOAD_DIR%\stage
+if exist "%STAGE%" rmdir /s /q "%STAGE%"
+mkdir "%STAGE%"
+echo [update] Extracting to staging...
 for %%Z in ("%DOWNLOAD_DIR%\*.zip") do (
     powershell -NoProfile -ExecutionPolicy Bypass -Command ^
-      "$ErrorActionPreference='Stop'; try { Expand-Archive -Path '%%Z' -DestinationPath '%INSTALL_DIR%' -Force; exit 0 } catch { Write-Host ('[update] PowerShell error: ' + $_.Exception.Message); exit 1 }"
+      "$ErrorActionPreference='Stop'; try { Expand-Archive -Path '%%Z' -DestinationPath '%STAGE%' -Force; exit 0 } catch { Write-Host ('[update] PowerShell error: ' + $_.Exception.Message); exit 1 }"
     if errorlevel 1 (
-        echo [update] ERROR: extract failed. Install may be partially corrupted.
-        echo [update]   Recovery: close any yt-mp3-tool.exe window, then either
-        echo [update]     a^) rerun update.bat to retry, or
-        echo [update]     b^) rmdir /s /q "%INSTALL_DIR%" and rerun for clean install.
+        echo [update] ERROR: extract to staging failed. Existing install untouched.
         exit /b 5
     )
+)
+
+REM -- copy staged files over install, retrying locked files --------------------
+if not exist "%INSTALL_DIR%" mkdir "%INSTALL_DIR%"
+echo [update] Installing files (retries locked files automatically)...
+REM robocopy /R:10 /W:2 retries any locked file up to 10 times, 2s apart, instead
+REM of aborting the whole update -- this is what actually beats the transient
+REM antivirus/indexer lock that broke the old single-shot extract. update.bat is
+REM excluded because it is the script currently running; it is swapped in after we
+REM exit (see the self-update helper below). robocopy exit codes 0-7 are success.
+robocopy "%STAGE%" "%INSTALL_DIR%" /E /R:10 /W:2 /XF update.bat /NFL /NDL /NJH /NJS /NP >nul
+if errorlevel 8 (
+    echo [update] ERROR: copy failed even after retries -- a file is still locked.
+    echo [update]   Recovery: close every yt-mp3-tool.exe window AND its console,
+    echo [update]   wait ~10s for antivirus to release files, then rerun update.bat.
+    echo [update]   Or clean install: rmdir /s /q "%INSTALL_DIR%" then rerun.
+    exit /b 5
 )
 
 REM -- post-extract sanity check -----------------------------------------------
@@ -121,14 +139,28 @@ if not exist "%INSTALL_DIR%\yt-mp3-tool.exe" (
     exit /b 6
 )
 set NEW_VERSION=unknown
-if exist "%INSTALL_DIR%\_version.txt" (
-    for /f "usebackq tokens=*" %%v in ("%INSTALL_DIR%\_version.txt") do set NEW_VERSION=%%v
+if exist "%INSTALL_DIR%\_internal\_version.txt" (
+    for /f "usebackq tokens=*" %%v in ("%INSTALL_DIR%\_internal\_version.txt") do set NEW_VERSION=%%v
 )
 if not "!NEW_VERSION!"=="%LATEST_VERSION%" (
     echo [update] ERROR: version mismatch after extract. Expected %LATEST_VERSION%, got !NEW_VERSION!.
     echo [update]   The zip may not have replaced all files. Try clean reinstall:
     echo [update]   rmdir /s /q "%INSTALL_DIR%" then rerun update.bat.
     exit /b 7
+)
+
+REM -- self-update the updater script (safely, after this script exits) ---------
+REM We deliberately did NOT overwrite the running update.bat above (overwriting a
+REM batch file mid-execution makes cmd read the new file from the old byte offset
+REM and run garbage). Instead spawn a detached helper that waits for us to finish,
+REM then swaps in the new updater from staging.
+if exist "%STAGE%\update.bat" (
+    > "%TEMP%\yt-mp3-swap-updater.cmd" (
+        echo @echo off
+        echo ping -n 2 127.0.0.1 ^>nul
+        echo copy /y "%STAGE%\update.bat" "%INSTALL_DIR%\update.bat" ^>nul
+    )
+    start "" /min cmd /c "%TEMP%\yt-mp3-swap-updater.cmd"
 )
 
 REM -- restart -----------------------------------------------------------------
