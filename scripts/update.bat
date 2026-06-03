@@ -1,17 +1,22 @@
 @echo off
 setlocal enabledelayedexpansion
 REM ============================================================================
-REM update.bat - pull latest yt-mp3-tool release from a private GitHub repo and
-REM install it over the existing copy. User data in %USERPROFILE%\.yt-mp3-tool\
-REM is NOT touched.
+REM update.bat - pull the latest yt-mp3-tool release and install it over the
+REM existing copy. User data in %USERPROFILE%\.yt-mp3-tool\ is NOT touched.
 REM
-REM Prerequisites on this PC (one-time):
-REM   1. winget install GitHub.cli
-REM   2. gh auth login   (browser flow; uses your GitHub account)
+REM HYBRID auth model (works whether the repo is private or public):
+REM   * If a GitHub token is available (GH_TOKEN env var, or `gh auth token`
+REM     from an authenticated gh CLI), the updater uses it -> PRIVATE repos work.
+REM   * If no token is available, it falls back to anonymous public download
+REM     -> PUBLIC repos work with NO login and NO gh required.
+REM   So self-hosters of the public release need nothing; the maintainer keeps
+REM   updating private pre-public releases as long as their gh stays logged in.
 REM
 REM Override defaults via env vars:
 REM   set INSTALL_DIR=D:\Apps\YT-MP3
-REM   set REPO=jmh273/yt-mp3-tool
+REM   set REPO=youruser/yt-mp3-tool
+REM   set GH_TOKEN=ghp_xxx           (optional; only needed for a private repo
+REM                                   on a machine without gh logged in)
 REM ============================================================================
 
 REM -- defaults ----------------------------------------------------------------
@@ -21,29 +26,52 @@ if not defined INSTALL_DIR set INSTALL_DIR=C:\Tools\YT-MP3
 echo [update] Repo:    %REPO%
 echo [update] Install: %INSTALL_DIR%
 
-REM -- check gh ----------------------------------------------------------------
-where gh >nul 2>nul
-if errorlevel 1 (
-    echo [update] ERROR: 'gh' CLI not on PATH.
-    echo [update]   Run: winget install GitHub.cli
-    echo [update]   Then open a new terminal and run: gh auth login
-    exit /b 2
-)
-
-gh auth status >nul 2>nul
-if errorlevel 1 (
-    echo [update] ERROR: not authenticated with GitHub.
-    echo [update]   Run: gh auth login
-    exit /b 2
-)
-
-REM -- get latest tag ----------------------------------------------------------
+REM -- query latest release ----------------------------------------------------
+REM A tiny PowerShell script resolves a token (if any), hits the releases API,
+REM and prints "<tag>#<download-url>#<auth-flag>". auth-flag=1 means the chosen
+REM download URL is the API asset endpoint and needs the token; 0 means it is the
+REM anonymous browser_download_url.
 echo [update] Querying latest release...
-for /f "tokens=*" %%t in ('gh api repos/%REPO%/releases/latest --jq .tag_name 2^>nul') do set LATEST_TAG=%%t
+set QPS1=%TEMP%\yt-mp3-query-release.ps1
+> "%QPS1%" echo $tok=$env:GH_TOKEN
+>>"%QPS1%" echo if (-not $tok) { $g=Get-Command gh -ErrorAction SilentlyContinue; if ($g) { try { $tok=(^& gh auth token 2^>$null) } catch { $tok=$null } } }
+>>"%QPS1%" echo $tok=($tok ^| Out-String).Trim()
+>>"%QPS1%" echo $h=@{}
+>>"%QPS1%" echo $h['User-Agent']='yt-mp3-tool-updater'
+>>"%QPS1%" echo $h['Accept']='application/vnd.github+json'
+>>"%QPS1%" echo if ($tok) { $h['Authorization']='Bearer '+$tok }
+>>"%QPS1%" echo $u='https://api.github.com/repos/'+$env:REPO+'/releases/latest'
+>>"%QPS1%" echo try { $r=Invoke-RestMethod -Uri $u -Headers $h } catch { exit 1 }
+>>"%QPS1%" echo $asset=$null
+>>"%QPS1%" echo foreach ($a in $r.assets) { if ($a.name -like '*windows-x64.zip') { $asset=$a; break } }
+>>"%QPS1%" echo if (-not $asset) { exit 1 }
+>>"%QPS1%" echo if ($tok) { $dl=$asset.url; $af='1' } else { $dl=$asset.browser_download_url; $af='0' }
+>>"%QPS1%" echo Write-Output ($r.tag_name+'#'+$dl+'#'+$af)
+
+set LATEST_TAG=
+set DL_URL=
+set AUTH_FLAG=
+for /f "usebackq tokens=1,2,3 delims=#" %%a in (`powershell -NoProfile -ExecutionPolicy Bypass -File "%QPS1%"`) do (
+    set LATEST_TAG=%%a
+    set DL_URL=%%b
+    set AUTH_FLAG=%%c
+)
+del "%QPS1%" >nul 2>nul
+
 if "%LATEST_TAG%"=="" (
-    echo [update] ERROR: failed to query latest release. Network down or repo wrong?
+    echo [update] ERROR: failed to query latest release.
+    echo [update]   - If the repo is PRIVATE: make sure gh is logged in
+    echo [update]     ^(gh auth status^) or set GH_TOKEN.
+    echo [update]   - If the repo is PUBLIC: check your network and that a
+    echo [update]     release with a *windows-x64.zip asset exists.
+    echo [update]   Repo: https://github.com/%REPO%/releases/latest
     exit /b 3
 )
+if "%DL_URL%"=="" (
+    echo [update] ERROR: latest release has no *windows-x64.zip asset.
+    exit /b 3
+)
+
 REM Strip a single leading 'v' (avoid stripping all v chars from versions like v0.5.0-rc.v2)
 set LATEST_VERSION=%LATEST_TAG%
 if "%LATEST_VERSION:~0,1%"=="v" set LATEST_VERSION=%LATEST_VERSION:~1%
@@ -68,9 +96,26 @@ REM -- download asset ----------------------------------------------------------
 set DOWNLOAD_DIR=%TEMP%\yt-mp3-update
 if exist "%DOWNLOAD_DIR%" rmdir /s /q "%DOWNLOAD_DIR%"
 mkdir "%DOWNLOAD_DIR%"
-echo [update] Downloading %LATEST_TAG% to %DOWNLOAD_DIR%...
-gh release download %LATEST_TAG% --repo %REPO% --pattern "*windows-x64.zip" --dir "%DOWNLOAD_DIR%"
-if errorlevel 1 (
+set OUT_ZIP=%DOWNLOAD_DIR%\yt-mp3-tool.zip
+echo [update] Downloading %LATEST_TAG%...
+REM Download script re-resolves the token (so we never pass it through batch env)
+REM and, when auth is needed, requests the API asset endpoint as an octet-stream.
+set DPS1=%TEMP%\yt-mp3-download-release.ps1
+> "%DPS1%" echo $h=@{}
+>>"%DPS1%" echo $h['User-Agent']='yt-mp3-tool-updater'
+>>"%DPS1%" echo if ($env:AUTH_FLAG -eq '1') {
+>>"%DPS1%" echo   $tok=$env:GH_TOKEN
+>>"%DPS1%" echo   if (-not $tok) { $g=Get-Command gh -ErrorAction SilentlyContinue; if ($g) { try { $tok=(^& gh auth token 2^>$null) } catch { $tok=$null } } }
+>>"%DPS1%" echo   $tok=($tok ^| Out-String).Trim()
+>>"%DPS1%" echo   if ($tok) { $h['Authorization']='Bearer '+$tok }
+>>"%DPS1%" echo   $h['Accept']='application/octet-stream'
+>>"%DPS1%" echo }
+>>"%DPS1%" echo try { Invoke-WebRequest -Uri $env:DL_URL -Headers $h -OutFile $env:OUT_ZIP -UseBasicParsing; exit 0 } catch { Write-Host ('[update] download error: '+$_.Exception.Message); exit 1 }
+
+powershell -NoProfile -ExecutionPolicy Bypass -File "%DPS1%"
+set _dlrc=%errorlevel%
+del "%DPS1%" >nul 2>nul
+if not "%_dlrc%"=="0" (
     echo [update] ERROR: download failed. Existing install left untouched.
     exit /b 4
 )

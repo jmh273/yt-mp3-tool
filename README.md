@@ -82,11 +82,18 @@ npm run dev
 
 設定儲存於 `~/.yt-mp3-tool/settings.json`
 
+## 免責聲明
+
+> ⚠️ **僅供個人使用，風險自負。**
+> 從 YouTube 下載內容可能**違反 [YouTube 服務條款](https://www.youtube.com/t/terms)**。本工具僅供個人學習與私人備份用途，請勿用於侵犯著作權或商業散布。使用本工具所衍生的任何後果由使用者自行承擔；作者不對任何濫用負責，亦不提供任何擔保（見 [LICENSE](LICENSE)）。
+> 本工具請求 YouTube／Google 授權時，採**自架者自帶**的 GCP OAuth 憑證——你只會用到自己的 API 配額，授權 token 僅存於你本機。
+
 ## 注意事項
 
 - 本工具僅供個人使用
 - 需定期更新 yt-dlp：`pip install -U yt-dlp`
 - 如遇下載失敗，通常是 yt-dlp 版本過舊或該影片有版權限制
+- 隨附的 ffmpeg / mp3gain 為 GPL 授權，詳見 [THIRD-PARTY-NOTICES.txt](THIRD-PARTY-NOTICES.txt)
 
 ## 完整 UI Walkthrough 測試（release 前驗收）
 
@@ -110,13 +117,14 @@ npm run e2e --prefix frontend
 
 完成後輸出 `frontend/e2e/report/walkthrough.html` — 開瀏覽器看，全綠才適合 release。
 
-## 部署到其他 Windows PC
+## 自架（給想自己裝來用的人）
 
-開發在這個 repo 內進行（`start.bat` / `npm run dev` + `uvicorn --reload`）。
-要把工具裝到另一台 Windows，**不需要** Python / Node — 走 release zip 路線：
+上面那段是**開發**用（從原始碼跑）。如果你只是想把工具裝起來用，**不需要** Python /
+Node / ffmpeg / GitHub 帳號——下載 release zip、用你自己的 Google 憑證即可。
 
-1. 在這台開發機打 git tag：`git tag v0.5.0 && git push --tags`
-2. GitHub Actions 自動 build → 上傳 release zip
-3. 在目標 PC 跑一次 `gh auth login`，之後每次只要 `update.bat`
+完整圖解步驟（含 Google Cloud 申請、OAuth 設定、憑證下載）請看
+**[docs/SELF-HOST-SETUP.md](docs/SELF-HOST-SETUP.md)**。
 
-完整步驟請看 [docs/DEPLOY.md](docs/DEPLOY.md)。
+日後更新只要在安裝資料夾跑 `update.bat`（走公開下載網址，免登入 GitHub）。
+
+> 維護者發布新版的流程（打 tag → CI build → release）見 [docs/DEPLOY.md](docs/DEPLOY.md)。

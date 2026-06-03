@@ -9,11 +9,14 @@ REM      Override by setting VERSION env var (CI passes the tag explicitly).
 REM   2. Build frontend SPA (npm run build -> frontend/dist/)
 REM   3. Stage SPA into backend/static/
 REM   4. Run PyInstaller (yt-mp3-tool.spec -> backend/dist/yt-mp3-tool/)
-REM   5. Stage ffmpeg.exe + mp3gain.exe + client_secret.json + update.bat
+REM   5. Stage ffmpeg.exe + mp3gain.exe + THIRD-PARTY-NOTICES.txt + update.bat
 REM   6. Zip -> dist/yt-mp3-tool-v<VERSION>-windows-x64.zip
 REM
+REM NOTE: client_secret.json is NOT bundled — self-hosters supply their own.
+REM       The build fails if any client_secret.json sneaks into the zip.
+REM
 REM Required tools on PATH: git, node, npm, python (with pyinstaller installed)
-REM Required files in tools/: ffmpeg.exe, mp3gain.exe, client_secret.json
+REM Required files in tools/: ffmpeg.exe, mp3gain.exe
 REM ============================================================================
 
 cd /d "%~dp0\.."
@@ -41,10 +44,12 @@ echo [build] VERSION=!VERSION!
 > "%BACKEND%\_version.txt" echo !VERSION!
 
 REM --- 2. Verify required bundled tools -----------------------------------------
-for %%F in (ffmpeg.exe mp3gain.exe client_secret.json) do (
+REM client_secret.json is intentionally NOT required — open-source releases ship
+REM without it, and self-hosters drop in their own next to the exe.
+for %%F in (ffmpeg.exe mp3gain.exe) do (
     if not exist "%TOOLS%\%%F" (
         echo [build] ERROR: missing %TOOLS%\%%F
-        echo [build] Place ffmpeg.exe, mp3gain.exe, and client_secret.json in tools/ before building.
+        echo [build] Place ffmpeg.exe and mp3gain.exe in tools/ before building.
         exit /b 1
     )
 )
@@ -77,10 +82,24 @@ REM --- 5. Stage extras into the bundle ----------------------------------------
 echo [build] Staging extras...
 copy /y "%TOOLS%\ffmpeg.exe"          "%BUNDLE%\" >nul || exit /b 1
 copy /y "%TOOLS%\mp3gain.exe"         "%BUNDLE%\" >nul || exit /b 1
-copy /y "%TOOLS%\client_secret.json"  "%BUNDLE%\" >nul || exit /b 1
 copy /y "%REPO_ROOT%\scripts\update.bat" "%BUNDLE%\" >nul || exit /b 1
+if exist "%REPO_ROOT%\THIRD-PARTY-NOTICES.txt" (
+    copy /y "%REPO_ROOT%\THIRD-PARTY-NOTICES.txt" "%BUNDLE%\" >nul || exit /b 1
+) else (
+    echo [build] ERROR: missing %REPO_ROOT%\THIRD-PARTY-NOTICES.txt ^(GPL compliance^)
+    exit /b 1
+)
 if exist "%REPO_ROOT%\docs\README-DEPLOY.md" (
     copy /y "%REPO_ROOT%\docs\README-DEPLOY.md" "%BUNDLE%\" >nul
+)
+
+REM --- 5b. Safety net: never ship a client_secret.json ----------------------------
+REM Even though we no longer stage it, guard against a stray copy left in the
+REM bundle by a previous build or a manually-dropped file.
+if exist "%BUNDLE%\client_secret.json" (
+    echo [build] ERROR: client_secret.json found in bundle — refusing to package.
+    echo [build] Open-source releases must NOT contain personal credentials.
+    exit /b 1
 )
 
 REM --- 6. Zip -------------------------------------------------------------------

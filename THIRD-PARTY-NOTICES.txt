@@ -1,0 +1,43 @@
+============================================================================
+THIRD-PARTY NOTICES — yt-mp3-tool
+============================================================================
+
+本工具的 release zip 隨附下列第三方執行檔。它們由本工具以「外部程序」
+方式呼叫（不靜態連結、不修改），各自保有原本的授權條款。本工具自身的
+原始碼採 MIT 授權（見 LICENSE），與下列 GPL 元件以「聚合散布（mere
+aggregation）」方式並存，不因此改變本工具原始碼的授權。
+
+依 GPL 要求，以下載明每個元件的授權與原始碼（source）取得方式。
+
+----------------------------------------------------------------------------
+1. FFmpeg  (ffmpeg.exe)
+----------------------------------------------------------------------------
+用途：將下載的音訊轉檔為 MP3。
+授權：GNU General Public License v3 (GPL-3.0)。
+      （本工具隨附的是含 GPL 元件的 build，故整體以 GPL-3.0 散布。）
+散布來源：BtbN/FFmpeg-Builds
+      https://github.com/BtBN/FFmpeg-Builds/releases
+      （asset：ffmpeg-master-latest-win64-gpl.zip）
+原始碼：
+      - FFmpeg 官方原始碼：https://ffmpeg.org/download.html
+      - 對應 build 的原始碼與 build script：https://github.com/BtBN/FFmpeg-Builds
+授權全文：https://www.gnu.org/licenses/gpl-3.0.html
+
+----------------------------------------------------------------------------
+2. MP3Gain  (mp3gain.exe)
+----------------------------------------------------------------------------
+用途：MP3 音量正規化（ReplayGain 分析與調整）。
+授權：GNU Lesser General Public License (LGPL) / GNU GPL
+      （MP3Gain 採 LGPL；其依賴的 mpglib 為 GPL 衍生，故散布的執行檔
+       整體視為 GPL。）
+散布來源：MP3Gain（Glen Sawyer）
+      https://mp3gain.sourceforge.net/
+原始碼：https://sourceforge.net/projects/mp3gain/files/
+授權全文：https://www.gnu.org/licenses/old-licenses/lgpl-2.1.html
+          https://www.gnu.org/licenses/gpl-2.0.html
+
+----------------------------------------------------------------------------
+如何取得原始碼
+----------------------------------------------------------------------------
+上述每個元件的原始碼皆可由其「散布來源 / 原始碼」連結公開取得。
+若連結失效，請於本工具 repo 開 issue，維護者將提供對應版本之原始碼。

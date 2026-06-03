@@ -23,6 +23,8 @@ backend/static/
 
 # Claude harness runtime state
 .claude/scheduled_tasks.lock
+# 機器本地設定（含使用者名稱 / 絕對路徑，不該進公開 repo）
+.claude/settings.local.json
 
 # IDE / OS
 .vscode/

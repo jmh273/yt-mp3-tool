@@ -540,7 +540,13 @@ def auth_login():
     if client_secret is None:
         raise HTTPException(
             status_code=500,
-            detail="找不到 client_secret.json — 請放到安裝目錄（exe 同目錄）或 backend/ 後重新啟動",
+            detail=(
+                "找不到 client_secret.json。本工具採「自架者自帶憑證」：請自行到 Google "
+                "Cloud Console 建立專案、啟用 YouTube Data API v3、建立「桌面應用程式」"
+                "OAuth 憑證，下載後命名為 client_secret.json 放到本程式 exe 的同一個資料夾，"
+                "再重新啟動。完整圖解步驟見安裝文件 docs/SELF-HOST-SETUP.md（GCP 申請 / "
+                "OAuth 同意畫面 / 憑證下載）。"
+            ),
         )
 
     def _do_oauth():
