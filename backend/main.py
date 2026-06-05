@@ -2885,16 +2885,24 @@ async def drive_upload_progress_sse(task_id: str):
     return StreamingResponse(event_stream(), media_type="text/event-stream")
 
 
-def _collect_upload_folders(settings: dict) -> list[dict]:
-    """列 output_path 下各批資料夾並標記是否已全數上傳。含 Drive 同步 I/O，須在 executor 跑。"""
+def _list_work_folders(settings: dict) -> list[pathlib.Path]:
+    """列 output_path 下的日期子資料夾，依名稱倒序。純 filesystem，不碰 Drive。"""
     output = pathlib.Path(settings["output_path"]).resolve()
     if not output.is_dir():
+        return []
+    return sorted((p for p in output.iterdir() if p.is_dir()), key=lambda p: p.name, reverse=True)
+
+
+def _collect_upload_folders(settings: dict) -> list[dict]:
+    """列 output_path 下各批資料夾並標記是否已全數上傳。含 Drive 同步 I/O，須在 executor 跑。"""
+    work_folders = _list_work_folders(settings)
+    if not work_folders:
         return []
     service = _build_drive_service()
     root_folder = settings.get("drive_root_folder", "YT-MP3") or "YT-MP3"
     root_id = _ensure_drive_folder(service, root_folder, None)
     folders = []
-    for folder in sorted((p for p in output.iterdir() if p.is_dir()), key=lambda p: p.name, reverse=True):
+    for folder in work_folders:
         local_names = {p.name for p in _local_media_files(folder)}
         uploaded = False
         if local_names:
@@ -2909,6 +2917,14 @@ def _collect_upload_folders(settings: dict) -> list[dict]:
                 uploaded = local_names.issubset(remote_names)
         folders.append({"name": folder.name, "directory": str(folder), "uploaded": uploaded})
     return folders
+
+
+@app.get("/folders")
+def list_folders():
+    """列 output_path 下的工作資料夾（日期子資料夾）。純 filesystem，不需 Drive 授權。"""
+    settings = load_settings()
+    folders = [{"name": p.name, "directory": str(p)} for p in _list_work_folders(settings)]
+    return {"folders": folders}
 
 
 @app.get("/drive/upload/folders")

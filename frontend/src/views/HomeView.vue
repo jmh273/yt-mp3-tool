@@ -44,7 +44,7 @@
           :class="{ active: activeView === 'latest' }"
           @click="showLatest"
         >
-          最新影片
+          🆕 最新影片
         </button>
 
         <button
@@ -76,7 +76,7 @@
           :class="{ active: activeView === 'discovery' }"
           @click="showDiscovery"
         >
-          🔍 同類新頻道
+          🧭 同類新頻道
         </button>
 
         <div class="left-tab-bar">
@@ -118,7 +118,7 @@
           >
             <img :src="ch.thumbnail" :alt="ch.title" width="32" height="32" />
             <div class="channel-info">
-              <span class="channel-title">{{ ch.title }}</span>
+              <span class="channel-title" :title="ch.title">{{ ch.title }}</span>
               <span v-if="channelDates[ch.channel_id]" class="channel-date">
                 {{ formatChannelDate(channelDates[ch.channel_id]!) }}
               </span>

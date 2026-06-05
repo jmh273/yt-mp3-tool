@@ -2,12 +2,12 @@
   <div class="upload-panel">
     <label class="field">
       <span class="field-label">本地端目錄</span>
-      <input
-        data-testid="drive-upload-dir"
-        class="dir-input"
-        type="text"
+      <DirectoryPicker
         v-model="dirInput"
+        :folders="pickerFolders"
         :disabled="drive.status === 'running'"
+        @open="loadFolders"
+        @pick="(f) => setDir(f.directory)"
       />
     </label>
 
@@ -15,7 +15,6 @@
       <button data-testid="drive-upload-button" class="upload-btn" @click="onUpload" :disabled="drive.status === 'running'">
         {{ drive.status === 'running' ? '上傳中...' : '上傳雲端硬碟' }}
       </button>
-      <button class="choose-btn" @click="openFolderPicker">選擇資料夾</button>
     </div>
 
     <p v-if="drive.error" class="drive-error">{{ drive.error }}</p>
@@ -35,28 +34,18 @@
         <span class="badge" :class="`badge-${item.status}`">{{ uploadStatusLabel(item.status) }}</span>
       </div>
     </div>
-
-    <div v-if="showFolderPicker" class="modal-backdrop">
-      <div class="folder-modal">
-        <div class="modal-head">
-          <strong>選擇要上傳的資料夾</strong>
-          <button @click="showFolderPicker = false">✕</button>
-        </div>
-        <button v-for="folder in drive.folders" :key="folder.directory" class="folder-choice" @click="chooseFolder(folder)">
-          <span>{{ folder.name }}</span>
-          <span v-if="folder.uploaded" class="uploaded-mark">已上傳</span>
-        </button>
-      </div>
-    </div>
   </div>
 </template>
 
 <script setup lang="ts">
-import { onMounted, ref, watch } from 'vue'
+import { computed, onMounted, ref } from 'vue'
 import { apiGet } from '@/api'
 import { useDownloadStore } from '@/stores/download'
-import { useDriveUploadStore, type DriveUploadFolder } from '@/stores/driveUpload'
+import { useDriveUploadStore } from '@/stores/driveUpload'
 import { useAuthStore } from '@/stores/auth'
+import { todayYyyymmdd, joinPath } from '@/utils/dateFolder'
+import { useWorkDir } from '@/composables/useWorkDir'
+import DirectoryPicker, { type PickerFolder } from '@/components/DirectoryPicker.vue'
 
 const download = useDownloadStore()
 const drive = useDriveUploadStore()
@@ -64,50 +53,37 @@ const auth = useAuthStore()
 const reauthInProgress = ref(false)
 
 const outputPath = ref('')
-const dirInput = ref('')
-const dirEdited = ref(false)
-const showFolderPicker = ref(false)
-
-function todayYyyymmdd(): string {
-  const d = new Date()
-  const y = d.getFullYear()
-  const m = String(d.getMonth() + 1).padStart(2, '0')
-  const day = String(d.getDate()).padStart(2, '0')
-  return `${y}${m}${day}`
-}
-
-function joinPath(base: string, sub: string): string {
-  if (!base) return sub
-  const sep = base.includes('\\') ? '\\' : '/'
-  return `${base.replace(/[\\/]+$/, '')}${sep}${sub}`
-}
 
 function defaultDir(): string {
   return joinPath(outputPath.value, download.lastWorkDirName || todayYyyymmdd())
 }
 
-async function loadSettings() {
+const { dirInput, applyDefault, setDir } = useWorkDir({
+  defaultDir,
+  watchSource: () => download.lastWorkDirName,
+})
+
+// 將 store 的資料夾清單映成 picker 格式：已上傳 → badge
+const pickerFolders = computed<PickerFolder[]>(() =>
+  drive.folders.map((f) => ({
+    name: f.name,
+    directory: f.directory,
+    badge: f.uploaded ? '已上傳' : undefined,
+  })),
+)
+
+async function loadFolders() {
+  await drive.loadFolders()
+}
+
+onMounted(async () => {
   try {
     const s = await apiGet<{ output_path: string }>('/settings')
     outputPath.value = s.output_path
   } catch {
     // ignore — 使用者仍可手動輸入
   }
-  if (!dirEdited.value) dirInput.value = defaultDir()
-}
-
-onMounted(loadSettings)
-
-// 下載完成後 store 會更新 lastWorkDirName，若使用者尚未手動修改則同步本地端目錄
-watch(
-  () => download.lastWorkDirName,
-  () => {
-    if (!dirEdited.value) dirInput.value = defaultDir()
-  },
-)
-
-watch(dirInput, (v) => {
-  if (v !== defaultDir()) dirEdited.value = true
+  applyDefault()
 })
 
 async function onUpload() {
@@ -124,17 +100,6 @@ async function reauthDrive() {
   } catch {
     // 開啟瀏覽器失敗：保留提示，使用者可重試
   }
-}
-
-async function openFolderPicker() {
-  await drive.loadFolders()
-  showFolderPicker.value = true
-}
-
-function chooseFolder(folder: DriveUploadFolder) {
-  dirInput.value = folder.directory
-  dirEdited.value = true
-  showFolderPicker.value = false
 }
 
 function uploadStatusLabel(status: string) {
@@ -154,14 +119,8 @@ function uploadStatusLabel(status: string) {
 }
 .field { display: flex; flex-direction: column; gap: 0.2rem; width: 100%; }
 .field-label { font-size: 0.72rem; color: #888; font-weight: normal; }
-.dir-input {
-  padding: 0.4rem 0.6rem; font-size: 0.85rem;
-  border: 1px solid #ccc; border-radius: 4px; min-width: 0;
-}
-.dir-input:disabled { opacity: 0.5; cursor: not-allowed; background: #f5f5f5; }
 .drive-upload { display: flex; flex-wrap: wrap; gap: 0.5rem; width: 100%; }
 .upload-btn { flex: 2; background: #ff0000; border: none; color: white; padding: 0.4rem; border-radius: 4px; cursor: pointer; font-size: 0.85rem; font-weight: bold; }
-.choose-btn { flex: 1; background: white; border: 1px solid #888; color: #555; padding: 0.4rem; border-radius: 4px; cursor: pointer; font-size: 0.85rem; }
 button:disabled { opacity: 0.5; cursor: not-allowed; }
 .drive-error { width: 100%; color: #c00; margin: 0; font-size: 0.82rem; }
 .reauth-btn { width: 100%; background: #1565c0; border: none; color: white; padding: 0.4rem; border-radius: 4px; cursor: pointer; font-size: 0.85rem; font-weight: bold; }
@@ -171,9 +130,4 @@ button:disabled { opacity: 0.5; cursor: not-allowed; }
 .badge-done { background: #e8f5e9; color: #2e7d32; }
 .badge-skipped { background: #e1f5fe; color: #0277bd; }
 .badge-error { background: #ffebee; color: #c62828; }
-.modal-backdrop { position: fixed; inset: 0; background: rgba(0,0,0,.25); display: flex; align-items: center; justify-content: center; z-index: 20; }
-.folder-modal { width: min(360px, calc(100vw - 2rem)); max-height: 70vh; overflow-y: auto; background: white; border-radius: 6px; border: 1px solid #ddd; box-shadow: 0 8px 30px rgba(0,0,0,.18); padding: 0.75rem; display: flex; flex-direction: column; gap: 0.4rem; }
-.modal-head { display: flex; justify-content: space-between; align-items: center; margin-bottom: 0.4rem; }
-.folder-choice { display: flex; justify-content: space-between; gap: 0.5rem; background: #fff; border: 1px solid #ddd; border-radius: 4px; padding: 0.5rem; cursor: pointer; }
-.uploaded-mark { color: #2e7d32; font-size: 0.75rem; }
 </style>

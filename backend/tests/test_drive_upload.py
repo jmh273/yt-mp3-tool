@@ -367,3 +367,38 @@ async def test_get_drive_upload_folders_marks_mp4_folder_uploaded(client, tmp_pa
 
     assert r.status_code == 200
     assert r.json()["folders"][0]["uploaded"] is True
+
+
+async def test_get_folders_lists_subdirs_name_reverse(client, tmp_path):
+    out = tmp_path / "out"
+    for name in ("20260601_a", "20260603_c", "20260602_b"):
+        (out / name).mkdir(parents=True)
+    (out / "note.txt").write_bytes(b"x")  # 非資料夾，應略過
+    with patch("main.load_settings", return_value={"output_path": str(out)}):
+        async with client as c:
+            r = await c.get("/folders")
+    assert r.status_code == 200
+    folders = r.json()["folders"]
+    assert [f["name"] for f in folders] == ["20260603_c", "20260602_b", "20260601_a"]
+    assert folders[0]["directory"] == str(out / "20260603_c")
+
+
+async def test_get_folders_does_not_touch_drive(client, tmp_path):
+    out = tmp_path / "out"
+    (out / "20260601_a").mkdir(parents=True)
+    with patch("main.load_settings", return_value={"output_path": str(out)}), \
+         patch("main.load_drive_credentials", side_effect=AssertionError("不應呼叫 Drive 授權")), \
+         patch("main.build", side_effect=AssertionError("不應建立 Drive service")) as mock_build:
+        async with client as c:
+            r = await c.get("/folders")
+    assert r.status_code == 200
+    assert [f["name"] for f in r.json()["folders"]] == ["20260601_a"]
+    mock_build.assert_not_called()
+
+
+async def test_get_folders_empty_when_output_missing(client, tmp_path):
+    with patch("main.load_settings", return_value={"output_path": str(tmp_path / "nope")}):
+        async with client as c:
+            r = await c.get("/folders")
+    assert r.status_code == 200
+    assert r.json()["folders"] == []

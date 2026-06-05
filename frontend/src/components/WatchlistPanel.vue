@@ -21,7 +21,7 @@
     >
       <img :src="item.thumbnail" :alt="item.title" width="32" height="32" />
       <div class="watchlist-info">
-        <span class="watchlist-title">{{ item.title }}</span>
+        <span class="watchlist-title" :title="item.title">{{ item.title }}</span>
       </div>
       <div class="watchlist-actions">
         <button

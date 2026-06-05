@@ -1,12 +1,13 @@
 <template>
   <div class="normalizer">
     <div class="dir-row">
-      <input
+      <DirectoryPicker
         v-model="dirInput"
-        type="text"
-        class="dir-input"
-        placeholder="MP3 目錄路徑"
+        :folders="pickerFolders"
         :disabled="store.status === 'running'"
+        placeholder="MP3 目錄路徑"
+        @open="loadFolders"
+        @pick="(f) => setDir(f.directory)"
       />
       <button
         class="load-btn"
@@ -16,6 +17,7 @@
         {{ store.status === 'loading' ? '載入中...' : '載入' }}
       </button>
     </div>
+    <p v-if="foldersError" class="error" data-testid="folders-error">{{ foldersError }}</p>
 
     <div class="target-row">
       <label class="target-label">
@@ -96,40 +98,45 @@
 </template>
 
 <script setup lang="ts">
-import { computed, onMounted, ref, watch } from 'vue'
+import { computed, onMounted, ref } from 'vue'
 import { apiGet } from '@/api'
 import { useNormalizeStore, type NormalizeProgressItem } from '@/stores/normalize'
 import { useDownloadStore } from '@/stores/download'
+import { todayYyyymmdd, joinPath } from '@/utils/dateFolder'
+import { useWorkDir } from '@/composables/useWorkDir'
+import DirectoryPicker, { type PickerFolder } from '@/components/DirectoryPicker.vue'
 
 const store = useNormalizeStore()
 const download = useDownloadStore()
-const dirInput = ref('')
 const outputPath = ref('')
-const dirEdited = ref(false)
-
-function todayYyyymmdd(): string {
-  const d = new Date()
-  const y = d.getFullYear()
-  const m = String(d.getMonth() + 1).padStart(2, '0')
-  const day = String(d.getDate()).padStart(2, '0')
-  return `${y}${m}${day}`
-}
-
-function joinPath(base: string, sub: string): string {
-  if (!base) return sub
-  const sep = base.includes('\\') ? '\\' : '/'
-  const trimmed = base.replace(/[\\/]+$/, '')
-  return `${trimmed}${sep}${sub}`
-}
+const pickerFolders = ref<PickerFolder[]>([])
+const foldersError = ref('')
 
 function defaultDir(): string {
   return download.targetDirPath || joinPath(outputPath.value, todayYyyymmdd())
 }
 
+const { dirInput, applyDefault, setDir } = useWorkDir({
+  defaultDir,
+  watchSource: () => download.targetDirPath,
+  // 已載入某目錄後，不再被下載分頁的預設值覆寫
+  canSync: () => !store.directory,
+})
+
+async function loadFolders() {
+  try {
+    const data = await apiGet<{ folders: { name: string; directory: string }[] }>('/folders')
+    pickerFolders.value = data.folders
+    foldersError.value = ''
+  } catch {
+    pickerFolders.value = []
+    foldersError.value = '無法載入資料夾清單，請改用手動輸入路徑'
+  }
+}
+
 onMounted(async () => {
   if (store.directory) {
-    dirInput.value = store.directory
-    dirEdited.value = true
+    setDir(store.directory)
     return
   }
   try {
@@ -141,19 +148,7 @@ onMounted(async () => {
   } catch {
     // 略過 — 使用者仍可手動輸入
   }
-  if (!dirEdited.value && !store.directory) dirInput.value = defaultDir()
-})
-
-// 下載分頁修改目標路徑時，未手動編輯且尚未載入目錄前一併同步預設值
-watch(
-  () => download.targetDirPath,
-  () => {
-    if (!dirEdited.value && !store.directory) dirInput.value = defaultDir()
-  },
-)
-
-watch(dirInput, (v) => {
-  if (v !== defaultDir()) dirEdited.value = true
+  applyDefault()
 })
 
 async function onLoad() {
@@ -210,10 +205,7 @@ const counts = computed(() => {
   overflow-y: auto;
 }
 .dir-row { display: flex; gap: 0.4rem; }
-.dir-input {
-  flex: 1; padding: 0.4rem 0.6rem; font-size: 0.85rem;
-  border: 1px solid #ccc; border-radius: 4px; min-width: 0;
-}
+.dir-row :deep(.dir-picker) { flex: 1; min-width: 0; }
 .load-btn {
   background: #fff; border: 1px solid #888; border-radius: 4px;
   padding: 0.4rem 0.8rem; cursor: pointer; font-size: 0.85rem;

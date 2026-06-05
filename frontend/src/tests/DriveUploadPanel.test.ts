@@ -47,7 +47,7 @@ describe('DriveUploadPanel', () => {
   it('本地端目錄欄位帶入完整路徑', async () => {
     const wrapper = mount(DriveUploadPanel)
     await flushPromises()
-    const input = wrapper.find<HTMLInputElement>('[data-testid="drive-upload-dir"]')
+    const input = wrapper.find<HTMLInputElement>('[data-testid="dir-picker-input"]')
     expect(input.element.value).toMatch(/^D:\\Music\\\d{8}$/)
   })
 
@@ -57,7 +57,7 @@ describe('DriveUploadPanel', () => {
 
     const wrapper = mount(DriveUploadPanel)
     await flushPromises()
-    const input = wrapper.find<HTMLInputElement>('[data-testid="drive-upload-dir"]')
+    const input = wrapper.find<HTMLInputElement>('[data-testid="dir-picker-input"]')
     expect(input.element.value).toBe('D:\\Music\\20260601_sports')
   })
 
@@ -93,13 +93,39 @@ describe('DriveUploadPanel', () => {
 
     const wrapper = mount(DriveUploadPanel)
     await flushPromises()
-    await wrapper.find('.choose-btn').trigger('click')
+    await wrapper.find('[data-testid="dir-picker-icon"]').trigger('click')
     await flushPromises()
-    await wrapper.find('.folder-choice').trigger('click')
-    await wrapper.find('[data-testid="drive-upload-button"]').trigger('click')
+    await wrapper.find('[data-testid="dir-picker-choice"]').trigger('click')
     await flushPromises()
 
+    // picker 只填路徑，尚未上傳
+    expect(spy).not.toHaveBeenCalled()
+    expect(wrapper.find<HTMLInputElement>('[data-testid="dir-picker-input"]').element.value)
+      .toBe('D:\\Music\\20260601_evening')
+
+    await wrapper.find('[data-testid="drive-upload-button"]').trigger('click')
+    await flushPromises()
     expect(spy).toHaveBeenCalledWith('D:\\Music\\20260601_evening')
+  })
+
+  it('改選彈窗對已上傳資料夾顯示「已上傳」badge', async () => {
+    const { apiGet } = await import('@/api')
+    vi.mocked(apiGet).mockImplementation(async (url: string) => {
+      if (url === '/settings') return { output_path: 'D:\\Music' } as any
+      if (url === '/drive/upload/folders') {
+        return {
+          folders: [
+            { name: '20260601_done', directory: 'D:\\Music\\20260601_done', uploaded: true },
+          ],
+        } as any
+      }
+      return {} as any
+    })
+    const wrapper = mount(DriveUploadPanel)
+    await flushPromises()
+    await wrapper.find('[data-testid="dir-picker-icon"]').trigger('click')
+    await flushPromises()
+    expect(wrapper.find('.folder-badge').text()).toBe('已上傳')
   })
 
   it('drive.reauthRequired 時顯示重新授權按鈕並觸發 login', async () => {
