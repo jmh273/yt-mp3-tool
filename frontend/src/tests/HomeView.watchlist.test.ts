@@ -13,6 +13,7 @@ vi.mock('@/api', () => ({
 
 import HomeView from '@/views/HomeView.vue'
 import { apiGet, apiDelete } from '@/api'
+import SearchVideosFeed from '@/components/SearchVideosFeed.vue'
 
 type Ch = { subscription_id: string; channel_id: string; title: string; thumbnail: string }
 
@@ -89,5 +90,21 @@ describe('HomeView 加入觀察名單', () => {
     await wrapper.findAll('.channel-card')[0]!.find('.watchlist-add-btn').trigger('click')
 
     expect(wrapper.findAll('.left-tab')[1]!.text()).toContain('(1)')
+  })
+
+  it('passes subscribedIds to search feed and appends subscribed channels from search', async () => {
+    const wrapper = await mountLoggedIn()
+
+    await wrapper.findAll('.latest-btn').find((btn) => btn.text().includes('搜尋'))!.trigger('click')
+    await flushPromises()
+
+    const search = wrapper.findComponent(SearchVideosFeed)
+    expect(search.props('subscribedIds')).toBeInstanceOf(Set)
+    expect(search.props('subscribedIds').has('UCA1')).toBe(true)
+
+    search.vm.$emit('subscribed', ch('UCNEW'))
+    await flushPromises()
+
+    expect(wrapper.findAll('.left-tab')[0]!.text()).toContain('(3)')
   })
 })

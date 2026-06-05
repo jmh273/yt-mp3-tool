@@ -2052,6 +2052,36 @@ async def search_videos(q: str):
     return {"videos": videos}
 
 
+@app.get("/search-channels")
+def search_channels(q: str):
+    require_credentials()
+    if not q or not q.strip():
+        return {"channels": []}
+    creds = require_credentials()
+    youtube = build("youtube", "v3", credentials=creds)
+    resp = youtube.search().list(
+        part="snippet",
+        q=q.strip(),
+        type="channel",
+        maxResults=50,
+    ).execute()
+    consume_quota(_QUOTA_SEARCH_LIST)
+    channels = []
+    for item in resp.get("items", []):
+        cid = (item.get("id", {}) or {}).get("channelId")
+        if not cid:
+            continue
+        snippet = item.get("snippet", {}) or {}
+        thumbs = snippet.get("thumbnails", {}) or {}
+        thumb = (thumbs.get("medium") or thumbs.get("default") or {}).get("url", "")
+        channels.append({
+            "channel_id": cid,
+            "title": snippet.get("title", ""),
+            "thumbnail": thumb,
+        })
+    return {"channels": channels}
+
+
 # ── 網址預覽路由 ───────────────────────────────────────────────────────────────
 def _sync_url_preview_yt_dlp(url: str) -> list[dict]:
     import yt_dlp
