@@ -4,6 +4,7 @@ import { setActivePinia, createPinia } from 'pinia'
 import TrendingVideosFeed from '@/components/TrendingVideosFeed.vue'
 import { useDownloadStore } from '@/stores/download'
 import { usePlayerStore } from '@/stores/player'
+import { useWatchlistStore } from '@/stores/watchlist'
 
 vi.mock('@/api', () => ({
   apiGet: vi.fn(),
@@ -122,6 +123,42 @@ describe('TrendingVideosFeed', () => {
     const player = usePlayerStore()
     expect(player.currentVideoId).toBe('all1')
     expect(player.isOpen).toBe(true)
+  })
+
+  it('adds a video channel to the watchlist from the feed', async () => {
+    const { apiGet } = await import('@/api')
+    vi.mocked(apiGet).mockImplementation(mockTrendingApi())
+
+    const wrapper = mount(TrendingVideosFeed)
+    await flushPromises()
+    await wrapper.find('.watch-btn').trigger('click')
+
+    const watchlist = useWatchlistStore()
+    expect(watchlist.has('UC_trend')).toBe(true)
+    expect(watchlist.items[0]).toMatchObject({
+      channel_id: 'UC_trend',
+      thumbnail: 'https://i.ytimg.com/vi/all1/mqdefault.jpg',
+    })
+    expect(wrapper.find('.watch-btn').attributes('disabled')).toBeDefined()
+  })
+
+  it('disables the watchlist button when channel_id is missing', async () => {
+    const { apiGet } = await import('@/api')
+    vi.mocked(apiGet).mockImplementation(async (path: string) => {
+      if (path === '/trending-videos/categories') return { categories: [{ id: null, label: '全部' }] }
+      if (path === '/trending-videos') {
+        return { videos: [makeVideo('missing-channel', { channel_id: undefined })], next_page_token: null }
+      }
+      return {}
+    })
+
+    const wrapper = mount(TrendingVideosFeed)
+    await flushPromises()
+
+    const btn = wrapper.find('.watch-btn')
+    expect(btn.attributes('disabled')).toBeDefined()
+    await btn.trigger('click')
+    expect(useWatchlistStore().items).toHaveLength(0)
   })
 
   it('formats view counts compactly', async () => {

@@ -78,4 +78,16 @@ describe('HomeView 加入觀察名單', () => {
     expect(watchlist.items).toHaveLength(1)
     expect(apiDelete).not.toHaveBeenCalled()
   })
+
+  it('shows subscribed and watchlist counts in the left tabs and updates after adding', async () => {
+    const wrapper = await mountLoggedIn()
+
+    const tabs = wrapper.findAll('.left-tab')
+    expect(tabs[0]!.text()).toContain('(2)')
+    expect(tabs[1]!.text()).toContain('(0)')
+
+    await wrapper.findAll('.channel-card')[0]!.find('.watchlist-add-btn').trigger('click')
+
+    expect(wrapper.findAll('.left-tab')[1]!.text()).toContain('(1)')
+  })
 })

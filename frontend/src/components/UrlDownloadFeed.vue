@@ -82,6 +82,17 @@
           <div class="info">
             <span class="title" :title="v.title">{{ v.title }} <span v-if="download.isDownloaded(v.video_id)" class="dl-badge">✅ 已下載</span></span>
             <span class="channel">{{ v.channel_title }}</span>
+            <button
+              class="watch-btn"
+              :class="{ watched: watchlist.has(v.channel_id || '') }"
+              :disabled="!v.channel_id || watchlist.has(v.channel_id)"
+              :title="!v.channel_id ? '此影片缺少頻道資訊，無法加入觀察名單' : (watchlist.has(v.channel_id) ? '已在觀察名單' : '加入觀察名單')"
+              @click="handleAddToWatchlist(v)"
+            >
+              <template v-if="!v.channel_id">🚫 無法加入</template>
+              <template v-else-if="watchlist.has(v.channel_id)">✓ 已在觀察名單</template>
+              <template v-else>👁 加入觀察名單</template>
+            </button>
           </div>
         </li>
       </ul>
@@ -94,9 +105,11 @@ import { ref, computed, watch } from 'vue'
 import { apiGet } from '@/api'
 import { useDownloadStore, type VideoItem } from '@/stores/download'
 import { usePlayerStore } from '@/stores/player'
+import { useWatchlistStore } from '@/stores/watchlist'
 
 const download = useDownloadStore()
 const player = usePlayerStore()
+const watchlist = useWatchlistStore()
 
 const urlInput = ref('')
 const videos = ref<VideoItem[]>([])
@@ -177,6 +190,15 @@ function deselectAllOnPage() {
     if (!download.isDownloaded(v.video_id) && download.isSelected(v.video_id)) {
       download.toggle(v)
     }
+  })
+}
+
+function handleAddToWatchlist(video: VideoItem) {
+  if (!video.channel_id) return
+  watchlist.add({
+    channel_id: video.channel_id,
+    title: video.channel_title || video.channel_id,
+    thumbnail: video.thumbnail,
   })
 }
 
@@ -344,6 +366,16 @@ ul { list-style: none; padding: 0; margin: 0; }
 .title { font-size: 0.85rem; font-weight: 500; display: -webkit-box; -webkit-line-clamp: 2; line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; text-overflow: ellipsis; white-space: normal; line-height: 1.4; margin-top: -0.2rem; }
 .dl-badge { font-size: 0.7rem; color: #4caf50; font-weight: normal; margin-left: 0.3rem; white-space: nowrap; display: inline-block; }
 .channel { font-size: 0.75rem; color: #555; }
+.watch-btn {
+  margin-top: 0.4rem;
+  padding: 0.3rem 0.7rem; font-size: 0.78rem;
+  background: #6a1b9a; color: white; border: none; border-radius: 4px;
+  cursor: pointer; align-self: flex-start;
+  transition: background 0.15s;
+}
+.watch-btn:hover:not(:disabled) { background: #4a148c; }
+.watch-btn:disabled { background: #bdbdbd; cursor: not-allowed; }
+.watch-btn.watched { background: #888; }
 .duration {
   position: absolute;
   bottom: 4px;

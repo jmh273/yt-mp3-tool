@@ -85,14 +85,14 @@
             :class="{ active: activeLeftTab === 'subscribed' }"
             @click="activeLeftTab = 'subscribed'"
           >
-            訂閱
+            訂閱 ({{ channels.length }})
           </button>
           <button
             class="left-tab"
             :class="{ active: activeLeftTab === 'watchlist' }"
             @click="activeLeftTab = 'watchlist'"
           >
-            觀察名單
+            觀察名單 ({{ watchlist.items.length }})
           </button>
         </div>
 
