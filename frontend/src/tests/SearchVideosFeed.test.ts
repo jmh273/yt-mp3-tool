@@ -3,6 +3,7 @@ import { mount, flushPromises } from '@vue/test-utils'
 import { setActivePinia, createPinia } from 'pinia'
 import SearchVideosFeed from '@/components/SearchVideosFeed.vue'
 import { usePlayerStore } from '@/stores/player'
+import { useWatchlistStore } from '@/stores/watchlist'
 import { snap, extractCss } from './snap'
 
 vi.mock('@/api', () => ({
@@ -26,7 +27,9 @@ function makeVideo(id: string) {
 
 describe('SearchVideosFeed', () => {
   beforeEach(() => {
+    vi.clearAllMocks()
     setActivePinia(createPinia())
+    localStorage.clear()
   })
 
   it('初始狀態顯示提示', async () => {
@@ -77,6 +80,42 @@ describe('SearchVideosFeed', () => {
     await wrapper.find('.thumb').trigger('click')
     expect(player.currentVideoId).toBe('s1')
     expect(player.isOpen).toBe(true)
+  })
+
+  it('adds a search result channel to the watchlist', async () => {
+    const { apiGet } = await import('@/api')
+    vi.mocked(apiGet).mockResolvedValueOnce({ videos: [makeVideo('s1')] })
+
+    const wrapper = mount(SearchVideosFeed)
+    await wrapper.find('input').setValue('lofi')
+    await wrapper.find('button').trigger('click')
+    await flushPromises()
+    await wrapper.find('.watch-btn').trigger('click')
+
+    const watchlist = useWatchlistStore()
+    expect(watchlist.has('UC_search')).toBe(true)
+    expect(watchlist.items[0]).toMatchObject({
+      channel_id: 'UC_search',
+      thumbnail: 'https://i.ytimg.com/vi/s1/mqdefault.jpg',
+    })
+    expect(wrapper.find('.watch-btn').attributes('disabled')).toBeDefined()
+  })
+
+  it('disables search result watchlist action without channel_id', async () => {
+    const { apiGet } = await import('@/api')
+    vi.mocked(apiGet).mockResolvedValueOnce({
+      videos: [{ ...makeVideo('s1'), channel_id: undefined }],
+    })
+
+    const wrapper = mount(SearchVideosFeed)
+    await wrapper.find('input').setValue('lofi')
+    await wrapper.find('button').trigger('click')
+    await flushPromises()
+
+    const btn = wrapper.find('.watch-btn')
+    expect(btn.attributes('disabled')).toBeDefined()
+    await btn.trigger('click')
+    expect(useWatchlistStore().items).toHaveLength(0)
   })
 
   it('查無結果時顯示提示', async () => {

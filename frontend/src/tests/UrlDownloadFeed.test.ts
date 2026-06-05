@@ -5,6 +5,7 @@ import UrlDownloadFeed from '@/components/UrlDownloadFeed.vue'
 import { snap, extractCss } from './snap'
 import { useDownloadStore } from '@/stores/download'
 import { usePlayerStore } from '@/stores/player'
+import { useWatchlistStore } from '@/stores/watchlist'
 
 vi.mock('@/api', () => ({
   apiGet: vi.fn(),
@@ -27,7 +28,9 @@ function makeVideo(id: string) {
 
 describe('UrlDownloadFeed', () => {
   beforeEach(() => {
+    vi.clearAllMocks()
     setActivePinia(createPinia())
+    localStorage.clear()
   })
 
   it('初始狀態顯示提示', async () => {
@@ -95,6 +98,42 @@ describe('UrlDownloadFeed', () => {
     await thumbs[0]?.trigger('click')
     expect(player.currentVideoId).toBe('u1')
     expect(player.isOpen).toBe(true)
+  })
+
+  it('adds a URL preview channel to the watchlist', async () => {
+    const { apiGet } = await import('@/api')
+    vi.mocked(apiGet).mockResolvedValueOnce({ videos: [makeVideo('u1')] })
+
+    const wrapper = mount(UrlDownloadFeed)
+    await wrapper.find('input').setValue('https://youtube.com/watch?v=u1')
+    await wrapper.find('.search-btn').trigger('click')
+    await flushPromises()
+    await wrapper.find('.watch-btn').trigger('click')
+
+    const watchlist = useWatchlistStore()
+    expect(watchlist.has('UC_url')).toBe(true)
+    expect(watchlist.items[0]).toMatchObject({
+      channel_id: 'UC_url',
+      thumbnail: 'https://i.ytimg.com/vi/u1/mqdefault.jpg',
+    })
+    expect(wrapper.find('.watch-btn').attributes('disabled')).toBeDefined()
+  })
+
+  it('disables URL preview watchlist action without channel_id', async () => {
+    const { apiGet } = await import('@/api')
+    vi.mocked(apiGet).mockResolvedValueOnce({
+      videos: [{ ...makeVideo('u1'), channel_id: undefined }],
+    })
+
+    const wrapper = mount(UrlDownloadFeed)
+    await wrapper.find('input').setValue('https://youtube.com/watch?v=u1')
+    await wrapper.find('.search-btn').trigger('click')
+    await flushPromises()
+
+    const btn = wrapper.find('.watch-btn')
+    expect(btn.attributes('disabled')).toBeDefined()
+    await btn.trigger('click')
+    expect(useWatchlistStore().items).toHaveLength(0)
   })
 
   it('解析失敗顯示錯誤', async () => {

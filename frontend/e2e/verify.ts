@@ -8,6 +8,7 @@ if (!change) {
 const known: Record<string, () => Promise<unknown>> = {
   'add-channel-watchlist': () => import('./verify-add-channel-watchlist'),
   'discovery-per-account-keywords': () => import('./verify-discovery-per-account-keywords'),
+  'watchlist-add-and-channel-count': () => import('./verify-watchlist-add-and-channel-count'),
 }
 
 const run = known[change]

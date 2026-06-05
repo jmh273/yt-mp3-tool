@@ -46,6 +46,17 @@
                 <span v-if="v.view_count != null" class="views">{{ formatViewCount(v.view_count) }}</span>
               </div>
             </div>
+            <button
+              class="watch-btn"
+              :class="{ watched: watchlist.has(v.channel_id || '') }"
+              :disabled="!v.channel_id || watchlist.has(v.channel_id)"
+              :title="!v.channel_id ? '此影片缺少頻道資訊，無法加入觀察名單' : (watchlist.has(v.channel_id) ? '已在觀察名單' : '加入觀察名單')"
+              @click="handleAddToWatchlist(v)"
+            >
+              <template v-if="!v.channel_id">🚫 無法加入</template>
+              <template v-else-if="watchlist.has(v.channel_id)">✓ 已在觀察名單</template>
+              <template v-else>👁 加入觀察名單</template>
+            </button>
           </div>
         </li>
       </ul>
@@ -65,10 +76,12 @@ import { apiGet } from '@/api'
 import { useDownloadStore, type VideoItem } from '@/stores/download'
 import { useQuotaStore } from '@/stores/quota'
 import { usePlayerStore } from '@/stores/player'
+import { useWatchlistStore } from '@/stores/watchlist'
 
 const download = useDownloadStore()
 const quota = useQuotaStore()
 const player = usePlayerStore()
+const watchlist = useWatchlistStore()
 
 interface TrendingResponse {
   videos: VideoItem[]
@@ -166,6 +179,15 @@ async function selectCategory(categoryId: string | null) {
     loading.value = false
     quota.refresh()
   }
+}
+
+function handleAddToWatchlist(video: VideoItem) {
+  if (!video.channel_id) return
+  watchlist.add({
+    channel_id: video.channel_id,
+    title: video.channel_title || video.channel_id,
+    thumbnail: video.thumbnail,
+  })
 }
 
 onMounted(loadInitial)
@@ -277,6 +299,16 @@ ul { list-style: none; padding: 0; margin: 0; }
 .dot { font-size: 0.75rem; color: #aaa; }
 .views { font-size: 0.75rem; color: #888; font-variant-numeric: tabular-nums; }
 .duration { position: absolute; bottom: 4px; right: 4px; background: rgba(0,0,0,0.8); color: white; padding: 2px 4px; border-radius: 4px; font-size: 0.7rem; line-height: 1; font-variant-numeric: tabular-nums; }
+.watch-btn {
+  margin-top: 0.4rem;
+  padding: 0.3rem 0.7rem; font-size: 0.78rem;
+  background: #6a1b9a; color: white; border: none; border-radius: 4px;
+  cursor: pointer; align-self: flex-start;
+  transition: background 0.15s;
+}
+.watch-btn:hover:not(:disabled) { background: #4a148c; }
+.watch-btn:disabled { background: #bdbdbd; cursor: not-allowed; }
+.watch-btn.watched { background: #888; }
 
 .loading, .error, .empty { padding: 1rem; color: #666; text-align: center; }
 .error { color: red; }
