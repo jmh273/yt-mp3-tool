@@ -154,7 +154,11 @@
         />
         <LatestVideosFeed v-else-if="activeView === 'latest'" />
         <TrendingVideosFeed v-else-if="activeView === 'trending'" />
-        <SearchVideosFeed v-else-if="activeView === 'search'" />
+        <SearchVideosFeed
+          v-else-if="activeView === 'search'"
+          :subscribed-ids="subscribedIds"
+          @subscribed="appendSubscribedChannel"
+        />
         <UrlDownloadFeed v-else-if="activeView === 'url'" />
         <SimilarChannelDiscoveryFeed v-else-if="activeView === 'discovery'" />
       </main>

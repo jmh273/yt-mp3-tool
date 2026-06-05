@@ -10,57 +10,114 @@
           placeholder="輸入關鍵字 (如: Lo-fi hip hop)" 
           class="search-input"
         />
-        <button class="search-btn" @click="handleSearch" :disabled="loading">
-          {{ loading ? '搜尋中...' : '搜尋' }}
+        <button class="search-btn" @click="handleSearch" :disabled="loading || channelLoading || (!searchVideos && !searchChannels)">
+          {{ loading || channelLoading ? '搜尋中...' : '搜尋' }}
         </button>
+      </div>
+      <div class="scope-row">
+        <label><input type="checkbox" v-model="searchVideos" /> 影片</label>
+        <label><input type="checkbox" v-model="searchChannels" /> 頻道 <span class="quota-hint">(約耗 100 配額)</span></label>
       </div>
     </div>
 
-    <div v-if="loading" class="status">載入中...</div>
-    <div v-else-if="error" class="status error">{{ error }}</div>
-    <div v-else-if="hasSearched && videos.length === 0" class="status">查無符合條件的影片</div>
-    <div v-else-if="!hasSearched" class="status empty-state">請輸入關鍵字開始搜尋</div>
+    <div v-if="!hasSearched" class="status empty-state">請輸入關鍵字開始搜尋</div>
 
-    <ul v-else class="video-grid">
-      <li v-for="v in videos" :key="v.video_id" class="video-item">
-        <div class="thumb-wrapper">
-          <input
-            type="checkbox"
-            class="video-checkbox"
-            :checked="download.isSelected(v.video_id) || download.isDownloaded(v.video_id)"
-            :disabled="download.isDownloaded(v.video_id)"
-            @change="download.toggle(v)"
-          />
-          <img :src="v.thumbnail" :alt="v.title" class="thumb" @click="player.open(v.video_id)" />
-          <span class="duration">{{ formatDuration(v.duration_seconds ?? null) }}</span>
-        </div>
-        <div class="info">
-          <span class="title" :title="v.title">{{ v.title }} <span v-if="download.isDownloaded(v.video_id)" class="dl-badge">✅ 已下載</span></span>
-          <span class="channel">{{ v.channel_title }}</span>
-          <button
-            class="watch-btn"
-            :class="{ watched: watchlist.has(v.channel_id || '') }"
-            :disabled="!v.channel_id || watchlist.has(v.channel_id)"
-            :title="!v.channel_id ? '此影片缺少頻道資訊，無法加入觀察名單' : (watchlist.has(v.channel_id) ? '已在觀察名單' : '加入觀察名單')"
-            @click="handleAddToWatchlist(v)"
-          >
-            <template v-if="!v.channel_id">🚫 無法加入</template>
-            <template v-else-if="watchlist.has(v.channel_id)">✓ 已在觀察名單</template>
-            <template v-else>👁 加入觀察名單</template>
-          </button>
-        </div>
-      </li>
-    </ul>
+    <section v-if="searchChannels && hasSearched" class="channel-section">
+      <h3 class="section-title">頻道</h3>
+      <div v-if="channelLoading" class="status">搜尋頻道中...</div>
+      <div v-else-if="channelError" class="status error">{{ channelError }}</div>
+      <div v-else-if="channels.length === 0" class="status">查無符合的頻道</div>
+      <ul v-else class="channel-list">
+        <li v-for="c in channels" :key="c.channel_id" class="channel-card">
+          <img :src="c.thumbnail" :alt="c.title" width="40" height="40" />
+          <span class="channel-name" :title="c.title">{{ c.title }}</span>
+          <div class="channel-actions">
+            <button
+              class="watch-btn"
+              :disabled="watchlist.has(c.channel_id)"
+              :title="watchlist.has(c.channel_id) ? '已在觀察名單' : '加入觀察名單'"
+              @click="addChannelToWatchlist(c)"
+            >
+              <template v-if="watchlist.has(c.channel_id)">✓ 已在觀察名單</template>
+              <template v-else>👁 加入觀察名單</template>
+            </button>
+            <button
+              class="subscribe-btn"
+              :disabled="isSubscribed(c.channel_id) || subscribingId === c.channel_id"
+              :title="isSubscribed(c.channel_id) ? '已訂閱' : '訂閱'"
+              @click="subscribeChannel(c)"
+            >
+              <template v-if="isSubscribed(c.channel_id)">✓ 已訂閱</template>
+              <template v-else>➕ 訂閱</template>
+            </button>
+          </div>
+        </li>
+      </ul>
+    </section>
+
+    <section v-if="searchVideos && hasSearched" class="video-section">
+      <h3 class="section-title">影片</h3>
+      <div v-if="loading" class="status">載入中...</div>
+      <div v-else-if="error" class="status error">{{ error }}</div>
+      <div v-else-if="videos.length === 0" class="status">查無符合條件的影片</div>
+
+      <ul v-else class="video-grid">
+        <li v-for="v in videos" :key="v.video_id" class="video-item">
+          <div class="thumb-wrapper">
+            <input
+              type="checkbox"
+              class="video-checkbox"
+              :checked="download.isSelected(v.video_id) || download.isDownloaded(v.video_id)"
+              :disabled="download.isDownloaded(v.video_id)"
+              @change="download.toggle(v)"
+            />
+            <img :src="v.thumbnail" :alt="v.title" class="thumb" @click="player.open(v.video_id)" />
+            <span class="duration">{{ formatDuration(v.duration_seconds ?? null) }}</span>
+          </div>
+          <div class="info">
+            <span class="title" :title="v.title">{{ v.title }} <span v-if="download.isDownloaded(v.video_id)" class="dl-badge">✅ 已下載</span></span>
+            <span class="channel">{{ v.channel_title }}</span>
+            <button
+              class="watch-btn"
+              :class="{ watched: watchlist.has(v.channel_id || '') }"
+              :disabled="!v.channel_id || watchlist.has(v.channel_id)"
+              :title="!v.channel_id ? '此影片缺少頻道資訊，無法加入觀察名單' : (watchlist.has(v.channel_id) ? '已在觀察名單' : '加入觀察名單')"
+              @click="handleAddToWatchlist(v)"
+            >
+              <template v-if="!v.channel_id">🚫 無法加入</template>
+              <template v-else-if="watchlist.has(v.channel_id)">✓ 已在觀察名單</template>
+              <template v-else>👁 加入觀察名單</template>
+            </button>
+          </div>
+        </li>
+      </ul>
+    </section>
   </div>
 </template>
 
 <script setup lang="ts">
 import { ref } from 'vue'
-import { apiGet } from '@/api'
+import { apiGet, apiPost } from '@/api'
 import { useDownloadStore, type VideoItem } from '@/stores/download'
 import { useQuotaStore } from '@/stores/quota'
 import { usePlayerStore } from '@/stores/player'
 import { useWatchlistStore } from '@/stores/watchlist'
+
+interface ChannelResult {
+  channel_id: string
+  title: string
+  thumbnail: string
+}
+
+interface SubscribedChannel {
+  subscription_id: string
+  channel_id: string
+  title: string
+  thumbnail: string
+}
+
+const props = defineProps<{ subscribedIds?: Set<string> }>()
+const emit = defineEmits<{ (e: 'subscribed', channel: SubscribedChannel): void }>()
 
 const download = useDownloadStore()
 const quota = useQuotaStore()
@@ -68,29 +125,56 @@ const player = usePlayerStore()
 const watchlist = useWatchlistStore()
 
 const searchInput = ref('')
+const searchVideos = ref(true)
+const searchChannels = ref(false)
 const videos = ref<VideoItem[]>([])
+const channels = ref<ChannelResult[]>([])
 const loading = ref(false)
 const error = ref('')
+const channelLoading = ref(false)
+const channelError = ref('')
 const hasSearched = ref(false)
+const subscribingId = ref('')
 
 async function handleSearch() {
   const q = searchInput.value.trim()
-  if (!q) return
+  if (!q || (!searchVideos.value && !searchChannels.value)) return
 
-  loading.value = true
-  error.value = ''
   hasSearched.value = true
-  videos.value = []
 
-  try {
-    const data = await apiGet<{ videos: VideoItem[] }>(`/search-videos?q=${encodeURIComponent(q)}`)
-    videos.value = data.videos || []
-  } catch (e: any) {
-    error.value = '無法載入搜尋結果'
-  } finally {
-    loading.value = false
-    quota.refresh()
+  if (searchVideos.value) {
+    loading.value = true
+    error.value = ''
+    videos.value = []
+    try {
+      const data = await apiGet<{ videos: VideoItem[] }>(`/search-videos?q=${encodeURIComponent(q)}`)
+      videos.value = data.videos || []
+    } catch {
+      error.value = '無法載入搜尋結果'
+    } finally {
+      loading.value = false
+    }
+  } else {
+    videos.value = []
   }
+
+  if (searchChannels.value) {
+    channelLoading.value = true
+    channelError.value = ''
+    channels.value = []
+    try {
+      const data = await apiGet<{ channels: ChannelResult[] }>(`/search-channels?q=${encodeURIComponent(q)}`)
+      channels.value = data.channels || []
+    } catch {
+      channelError.value = '無法載入頻道搜尋結果'
+    } finally {
+      channelLoading.value = false
+    }
+  } else {
+    channels.value = []
+  }
+
+  quota.refresh()
 }
 
 function handleAddToWatchlist(video: VideoItem) {
@@ -100,6 +184,37 @@ function handleAddToWatchlist(video: VideoItem) {
     title: video.channel_title || video.channel_id,
     thumbnail: video.thumbnail,
   })
+}
+
+function isSubscribed(channelId: string): boolean {
+  return props.subscribedIds?.has(channelId) ?? false
+}
+
+function addChannelToWatchlist(c: ChannelResult) {
+  watchlist.add({ channel_id: c.channel_id, title: c.title, thumbnail: c.thumbnail })
+}
+
+async function subscribeChannel(c: ChannelResult) {
+  if (subscribingId.value || isSubscribed(c.channel_id)) return
+  subscribingId.value = c.channel_id
+  try {
+    const res = await apiPost<{
+      subscription_id: string
+      channel?: SubscribedChannel
+    }>(`/subscriptions/${c.channel_id}`)
+    const channel = res.channel ?? {
+      subscription_id: res.subscription_id,
+      channel_id: c.channel_id,
+      title: c.title,
+      thumbnail: c.thumbnail,
+    }
+    emit('subscribed', channel)
+  } catch {
+    // v1：訂閱失敗或 duplicate 先靜默忽略，之後由 subscribedIds 反映狀態。
+  } finally {
+    subscribingId.value = ''
+    quota.refresh()
+  }
 }
 
 function formatDuration(seconds: number | null): string {
@@ -159,6 +274,19 @@ function formatDuration(seconds: number | null): string {
   background-color: #a0a4ff;
   cursor: not-allowed;
 }
+
+.scope-row { display: flex; gap: 1.2rem; margin-top: 0.6rem; font-size: 0.9rem; }
+.scope-row label { display: inline-flex; align-items: center; gap: 0.35rem; cursor: pointer; }
+.quota-hint { color: #d32f2f; font-size: 0.8rem; }
+.section-title { font-size: 0.95rem; color: #555; margin: 1rem 0 0.5rem; border-bottom: 1px solid #eee; padding-bottom: 0.3rem; }
+.channel-list { list-style: none; padding: 0; margin: 0; display: flex; flex-direction: column; gap: 0.4rem; }
+.channel-card { display: flex; align-items: center; gap: 0.7rem; padding: 0.5rem; border: 1px solid #eee; border-radius: 8px; background: #fff; }
+.channel-card img { border-radius: 50%; flex-shrink: 0; }
+.channel-name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 0.9rem; font-weight: 500; }
+.channel-actions { display: inline-flex; gap: 0.4rem; }
+.subscribe-btn { padding: 0.3rem 0.7rem; font-size: 0.78rem; background: #2ea043; color: #fff; border: none; border-radius: 4px; cursor: pointer; }
+.subscribe-btn:hover:not(:disabled) { background: #278a3a; }
+.subscribe-btn:disabled { background: #bdbdbd; cursor: not-allowed; }
 
 .status { padding: 2rem; color: #888; text-align: center; }
 .empty-state { color: #aaa; font-style: italic; }
