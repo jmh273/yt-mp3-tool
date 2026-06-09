@@ -11,6 +11,7 @@ const known: Record<string, () => Promise<unknown>> = {
   'watchlist-add-and-channel-count': () => import('./verify-watchlist-add-and-channel-count'),
   'search-channels': () => import('./verify-search-channels'),
   'search-subscribe-graceful-toast': () => import('./verify-search-subscribe-graceful-toast'),
+  'subscription-reconciliation': () => import('./verify-subscription-reconciliation'),
 }
 
 const run = known[change]

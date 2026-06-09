@@ -687,6 +687,65 @@ def _insert_subscription(youtube, channel_id: str) -> dict:
     return {"success": True, "subscription_id": channel["subscription_id"], "channel": channel}
 
 
+class ReconcileBody(BaseModel):
+    channel_ids: list[str] = []
+
+
+@app.post("/subscriptions/reconcile")
+def reconcile_subscriptions(body: ReconcileBody):
+    ids = [channel_id.strip() for channel_id in (body.channel_ids or []) if channel_id and channel_id.strip()]
+    if not ids:
+        raise HTTPException(status_code=400, detail="缺少 channel_ids")
+
+    creds = require_credentials()
+    youtube = build("youtube", "v3", credentials=creds)
+
+    api_ids: set[str] = set()
+    page_token = None
+    while True:
+        resp = youtube.subscriptions().list(
+            part="snippet",
+            mine=True,
+            maxResults=50,
+            pageToken=page_token,
+            order="alphabetical",
+        ).execute()
+        consume_quota(1)
+        for item in resp.get("items", []):
+            channel_id = item.get("snippet", {}).get("resourceId", {}).get("channelId")
+            if channel_id:
+                api_ids.add(channel_id)
+        page_token = resp.get("nextPageToken")
+        if not page_token:
+            break
+
+    unique_ids = list(dict.fromkeys(ids))
+    missing = [channel_id for channel_id in unique_ids if channel_id not in api_ids]
+
+    alive: set[str] = set()
+    for i in range(0, len(missing), 50):
+        batch = missing[i:i + 50]
+        if not batch:
+            continue
+        resp = youtube.channels().list(part="id", id=",".join(batch)).execute()
+        consume_quota(1)
+        for item in resp.get("items", []):
+            channel_id = item.get("id")
+            if channel_id:
+                alive.add(channel_id)
+
+    dead = [channel_id for channel_id in missing if channel_id not in alive]
+    desynced = [channel_id for channel_id in missing if channel_id in alive]
+
+    return {
+        "takeout_count": len(unique_ids),
+        "api_count": len(api_ids),
+        "missing_count": len(missing),
+        "dead": dead,
+        "desynced": desynced,
+    }
+
+
 @app.post("/subscriptions/{channel_id}")
 def post_subscription(channel_id: str):
     creds = require_credentials()

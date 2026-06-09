@@ -97,9 +97,14 @@
         </div>
 
         <div v-if="activeLeftTab === 'subscribed'" class="left-tab-content">
-          <button class="action-btn" @click="checkLatestDates" :disabled="checkingDates">
-            {{ checkingDates ? '檢查中...' : '檢查更新日期' }}
-          </button>
+          <div class="action-row">
+            <button class="action-btn reconcile-btn" @click="showReconcile = true">
+              訂閱對帳
+            </button>
+            <button class="action-btn" @click="checkLatestDates" :disabled="checkingDates">
+              {{ checkingDates ? '檢查中...' : '檢查更新日期' }}
+            </button>
+          </div>
 
           <input
             v-model="searchQuery"
@@ -200,6 +205,7 @@
         </div>
       </aside>
     </div>
+    <ReconcileWizard v-if="showReconcile" @close="showReconcile = false" />
   </div>
 </template>
 
@@ -220,6 +226,7 @@ import SearchVideosFeed from '@/components/SearchVideosFeed.vue'
 import UrlDownloadFeed from '@/components/UrlDownloadFeed.vue'
 import SimilarChannelDiscoveryFeed from '@/components/SimilarChannelDiscoveryFeed.vue'
 import WatchlistPanel from '@/components/WatchlistPanel.vue'
+import ReconcileWizard from '@/components/ReconcileWizard.vue'
 import SelectedVideos from '@/components/SelectedVideos.vue'
 import VolumeNormalizer from '@/components/VolumeNormalizer.vue'
 import DriveUploadPanel from '@/components/DriveUploadPanel.vue'
@@ -253,6 +260,7 @@ useAutoPostDownloadPipeline(activeRightTab)
 const checkingDates = ref(false)
 const channelDates = ref<Record<string, string>>({})
 const accountDropdownOpen = ref(false)
+const showReconcile = ref(false)
 
 const filteredChannels = computed(() => {
   const q = searchQuery.value.trim().toLowerCase()
@@ -584,6 +592,8 @@ h1 { margin: 0; font-size: 1.2rem; }
 .channel-title { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .channel-date { font-size: 0.7rem; color: #888; }
 .action-btn { width: 100%; padding: 0.5rem; background: #fff; border: 1px solid #ddd; border-radius: 6px; cursor: pointer; font-size: 0.85rem; margin-bottom: 0.5rem; }
+.action-row { display: flex; gap: 0.4rem; }
+.action-row .action-btn { flex: 1; margin-bottom: 0.5rem; }
 .action-btn:disabled { opacity: 0.6; cursor: not-allowed; }
 .delete-btn { background: none; border: none; cursor: pointer; opacity: 0.5; padding: 0.2rem; }
 .channel-card:hover .delete-btn { opacity: 1; }

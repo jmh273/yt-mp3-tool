@@ -13,6 +13,7 @@ vi.mock('@/api', () => ({
 
 import HomeView from '@/views/HomeView.vue'
 import { apiGet, apiDelete } from '@/api'
+import ReconcileWizard from '@/components/ReconcileWizard.vue'
 import SearchVideosFeed from '@/components/SearchVideosFeed.vue'
 
 type Ch = { subscription_id: string; channel_id: string; title: string; thumbnail: string }
@@ -106,5 +107,16 @@ describe('HomeView 加入觀察名單', () => {
     await flushPromises()
 
     expect(wrapper.findAll('.left-tab')[0]!.text()).toContain('(3)')
+  })
+
+  it('opens the subscription reconcile wizard from the subscribed tab', async () => {
+    const wrapper = await mountLoggedIn()
+
+    expect(wrapper.findComponent(ReconcileWizard).exists()).toBe(false)
+
+    await wrapper.find('.reconcile-btn').trigger('click')
+    await flushPromises()
+
+    expect(wrapper.findComponent(ReconcileWizard).exists()).toBe(true)
   })
 })
