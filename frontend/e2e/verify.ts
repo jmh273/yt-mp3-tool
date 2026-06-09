@@ -10,6 +10,7 @@ const known: Record<string, () => Promise<unknown>> = {
   'discovery-per-account-keywords': () => import('./verify-discovery-per-account-keywords'),
   'watchlist-add-and-channel-count': () => import('./verify-watchlist-add-and-channel-count'),
   'search-channels': () => import('./verify-search-channels'),
+  'search-subscribe-graceful-toast': () => import('./verify-search-subscribe-graceful-toast'),
 }
 
 const run = known[change]

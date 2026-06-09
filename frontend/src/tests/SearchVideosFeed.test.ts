@@ -3,6 +3,7 @@ import { mount, flushPromises } from '@vue/test-utils'
 import { setActivePinia, createPinia } from 'pinia'
 import SearchVideosFeed from '@/components/SearchVideosFeed.vue'
 import { usePlayerStore } from '@/stores/player'
+import { useToastStore } from '@/stores/toast'
 import { useWatchlistStore } from '@/stores/watchlist'
 import { snap, extractCss } from './snap'
 
@@ -230,6 +231,74 @@ describe('SearchVideosFeed', () => {
       title: 'Lo-fi Radio',
       thumbnail: 'https://i.ytimg.com/vi/UC_chan/mqdefault.jpg',
     })
+    expect(useToastStore().toasts).toContainEqual(
+      expect.objectContaining({
+        type: 'success',
+        message: '已訂閱「Lo-fi Radio」',
+      }),
+    )
+  })
+
+  it('treats duplicate subscription errors as an info toast and emits a local subscribed channel', async () => {
+    const { apiGet, apiPost } = await import('@/api')
+    vi.mocked(apiGet).mockImplementation(async (path: string) => {
+      if (path.startsWith('/search-channels')) return { channels: [makeChannel('UC_chan', 'Lo-fi Radio')] }
+      if (path.startsWith('/quota')) return { used: 100, limit: 10000, date: '' }
+      return {}
+    })
+    vi.mocked(apiPost).mockRejectedValueOnce(
+      new Error('Subscription failed: HttpError subscriptionDuplicate already exists'),
+    )
+
+    const wrapper = mount(SearchVideosFeed)
+    await wrapper.find('input[type="text"]').setValue('lofi')
+    await wrapper.findAll('input[type="checkbox"]')[0]!.setValue(false)
+    await wrapper.findAll('input[type="checkbox"]')[1]!.setValue(true)
+    await wrapper.find('.search-btn').trigger('click')
+    await flushPromises()
+    await wrapper.find('.subscribe-btn').trigger('click')
+    await flushPromises()
+
+    expect(wrapper.emitted('subscribed')?.[0]?.[0]).toEqual({
+      subscription_id: '',
+      channel_id: 'UC_chan',
+      title: 'Lo-fi Radio',
+      thumbnail: 'https://i.ytimg.com/vi/UC_chan/mqdefault.jpg',
+    })
+    expect(useToastStore().toasts).toContainEqual(
+      expect.objectContaining({
+        type: 'info',
+        message: '「Lo-fi Radio」此帳號已訂閱',
+      }),
+    )
+    expect(useToastStore().toasts).not.toContainEqual(expect.objectContaining({ type: 'error' }))
+  })
+
+  it('shows subscription errors without emitting subscribed', async () => {
+    const { apiGet, apiPost } = await import('@/api')
+    vi.mocked(apiGet).mockImplementation(async (path: string) => {
+      if (path.startsWith('/search-channels')) return { channels: [makeChannel('UC_chan', 'Lo-fi Radio')] }
+      if (path.startsWith('/quota')) return { used: 100, limit: 10000, date: '' }
+      return {}
+    })
+    vi.mocked(apiPost).mockRejectedValueOnce(new Error('quota exceeded'))
+
+    const wrapper = mount(SearchVideosFeed)
+    await wrapper.find('input[type="text"]').setValue('lofi')
+    await wrapper.findAll('input[type="checkbox"]')[0]!.setValue(false)
+    await wrapper.findAll('input[type="checkbox"]')[1]!.setValue(true)
+    await wrapper.find('.search-btn').trigger('click')
+    await flushPromises()
+    await wrapper.find('.subscribe-btn').trigger('click')
+    await flushPromises()
+
+    expect(wrapper.emitted('subscribed')).toBeUndefined()
+    expect(useToastStore().toasts).toContainEqual(
+      expect.objectContaining({
+        type: 'error',
+        message: 'quota exceeded',
+      }),
+    )
   })
 
   it('查無結果時顯示提示', async () => {

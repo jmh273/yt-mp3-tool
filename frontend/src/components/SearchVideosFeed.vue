@@ -101,6 +101,7 @@ import { apiGet, apiPost } from '@/api'
 import { useDownloadStore, type VideoItem } from '@/stores/download'
 import { useQuotaStore } from '@/stores/quota'
 import { usePlayerStore } from '@/stores/player'
+import { useToastStore } from '@/stores/toast'
 import { useWatchlistStore } from '@/stores/watchlist'
 
 interface ChannelResult {
@@ -122,6 +123,7 @@ const emit = defineEmits<{ (e: 'subscribed', channel: SubscribedChannel): void }
 const download = useDownloadStore()
 const quota = useQuotaStore()
 const player = usePlayerStore()
+const toast = useToastStore()
 const watchlist = useWatchlistStore()
 
 const searchInput = ref('')
@@ -209,8 +211,20 @@ async function subscribeChannel(c: ChannelResult) {
       thumbnail: c.thumbnail,
     }
     emit('subscribed', channel)
-  } catch {
-    // v1：訂閱失敗或 duplicate 先靜默忽略，之後由 subscribedIds 反映狀態。
+    toast.success(`已訂閱「${c.title}」`)
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err)
+    if (/subscriptionDuplicate|already exists/i.test(message)) {
+      emit('subscribed', {
+        subscription_id: '',
+        channel_id: c.channel_id,
+        title: c.title,
+        thumbnail: c.thumbnail,
+      })
+      toast.info(`「${c.title}」此帳號已訂閱`)
+    } else {
+      toast.error(message)
+    }
   } finally {
     subscribingId.value = ''
     quota.refresh()
