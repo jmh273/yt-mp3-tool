@@ -5,6 +5,8 @@ __pycache__/
 .pytest_cache/
 backend/test-report.html
 backend/_version.txt
+# 前端 vitest 自動產生的測試報告（根目錄）
+test-report.html
 
 # Build/run logs
 build.log
