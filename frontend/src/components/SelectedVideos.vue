@@ -1,7 +1,7 @@
 <template>
-  <div class="selected-panel" v-if="download.selected.length > 0 || download.downloading || Object.keys(download.progress).length > 0">
+  <div class="selected-panel">
     <div class="header">
-      <span>已選取 {{ download.selected.length }} 支影片</span>
+      <span>{{ download.selected.length > 0 ? `已選取 ${download.selected.length} 支影片` : '尚未選取影片' }}</span>
 
       <div class="format-row">
         <label class="field">
@@ -63,7 +63,7 @@
       </small>
 
       <div class="actions">
-        <button class="clear" @click="download.clearAll" :disabled="download.downloading">清除全部</button>
+        <button class="clear" @click="download.clearAll" :disabled="download.downloading || download.selected.length === 0">清除全部</button>
         <button
           class="dl"
           @click="onDownload"
@@ -177,7 +177,7 @@ async function loadSettings() {
 
 onMounted(() => {
   loadSettings()
-  if (download.selected.length > 0) fetchNextSeq()
+  fetchNextSeq()
 })
 
 watch(

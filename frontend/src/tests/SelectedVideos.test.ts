@@ -27,9 +27,26 @@ describe('SelectedVideos', () => {
     localStorage.clear()
   })
 
-  it('無選取影片時不顯示面板', () => {
+  it('無選取影片時仍顯示面板與設定欄位，並於掛載即預填', async () => {
+    const { apiGet } = await import('@/api')
+    vi.mocked(apiGet).mockClear()
+
     const wrapper = mount(SelectedVideos)
-    expect(wrapper.find('.selected-panel').exists()).toBe(false)
+    await flushPromises()
+
+    // 面板與設定欄位即顯示（即使尚未選取）
+    expect(wrapper.find('.selected-panel').exists()).toBe(true)
+    expect(wrapper.text()).toContain('尚未選取影片')
+    expect(wrapper.find('.format-select').exists()).toBe(true)
+    expect(wrapper.find('.start-seq-input').exists()).toBe(true)
+    expect(wrapper.find('[data-testid="download-target-dir"]').exists()).toBe(true)
+
+    // 掛載即觸發 next-seq 預填
+    expect(vi.mocked(apiGet)).toHaveBeenCalledWith('/download/next-seq')
+
+    // 無選取時下載 / 清除全部按鈕停用
+    expect(wrapper.find('.dl').attributes('disabled')).toBeDefined()
+    expect(wrapper.find('.clear').attributes('disabled')).toBeDefined()
   })
 
   it('有選取影片時顯示面板與數量', async () => {

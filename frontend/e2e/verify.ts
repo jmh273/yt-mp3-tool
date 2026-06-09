@@ -12,6 +12,7 @@ const known: Record<string, () => Promise<unknown>> = {
   'search-channels': () => import('./verify-search-channels'),
   'search-subscribe-graceful-toast': () => import('./verify-search-subscribe-graceful-toast'),
   'subscription-reconciliation': () => import('./verify-subscription-reconciliation'),
+  'download-panel-prefill-fields': () => import('./verify-download-panel-prefill-fields'),
 }
 
 const run = known[change]
