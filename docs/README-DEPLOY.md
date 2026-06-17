@@ -2,7 +2,8 @@
 
 ## 第一次安裝？
 請看完整自架步驟（含 Google 憑證申請）：
-- repo 上的 `docs/SELF-HOST-SETUP.md`
+- **本資料夾裡的 `SELF-HOST-SETUP.md`**（已隨 zip 附上）
+- 或線上版：repo 的 `docs/SELF-HOST-SETUP.md`
 
 重點：本工具需要**你自己的** `client_secret.json`（從 Google Cloud 申請），
 放到本 exe 的同一個資料夾。ffmpeg / mp3gain 已內建，不用另外裝。

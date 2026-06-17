@@ -92,6 +92,14 @@ if exist "%REPO_ROOT%\THIRD-PARTY-NOTICES.txt" (
 if exist "%REPO_ROOT%\docs\README-DEPLOY.md" (
     copy /y "%REPO_ROOT%\docs\README-DEPLOY.md" "%BUNDLE%\" >nul
 )
+REM SELF-HOST-SETUP.md ships INSIDE the zip so downloaders have the full
+REM Google-credential setup guide offline, without needing the GitHub repo.
+if exist "%REPO_ROOT%\docs\SELF-HOST-SETUP.md" (
+    copy /y "%REPO_ROOT%\docs\SELF-HOST-SETUP.md" "%BUNDLE%\" >nul || exit /b 1
+) else (
+    echo [build] ERROR: missing %REPO_ROOT%\docs\SELF-HOST-SETUP.md ^(self-host setup guide^)
+    exit /b 1
+)
 
 REM --- 5b. Safety net: never ship a client_secret.json ----------------------------
 REM Even though we no longer stage it, guard against a stray copy left in the
