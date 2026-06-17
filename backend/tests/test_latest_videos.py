@@ -275,9 +275,9 @@ async def test_latest_videos_returns_all_matching_videos(client):
     assert published == sorted(published, reverse=True), "應依 published 由新到舊排序"
 
 
-# ── downloaded_today 標記（依今日下載資料夾比對） ──────────────────────────────
+# ── downloaded_on_disk 標記（遞迴掃描整個下載根目錄比對） ──────────────────────
 async def test_latest_videos_downloaded_today_true_when_file_in_folder(client, tmp_path):
-    """今日資料夾中存在 sanitized title 對應的檔案時，downloaded_today 為 true。"""
+    """今日資料夾中存在 sanitized title 對應的檔案時，downloaded_on_disk 為 true。"""
     channels = [{"channel_id": "UC_a", "title": "Chan A"}]
     matched = _make_video("v_match", hours_ago=1)
     unmatched = _make_video("v_miss", hours_ago=2)
@@ -295,8 +295,8 @@ async def test_latest_videos_downloaded_today_true_when_file_in_folder(client, t
             r = await c.get("/latest-videos?hours=24")
 
     videos = {v["video_id"]: v for v in r.json()["videos"]}
-    assert videos["v_match"]["downloaded_today"] is True
-    assert videos["v_miss"]["downloaded_today"] is False
+    assert videos["v_match"]["downloaded_on_disk"] is True
+    assert videos["v_miss"]["downloaded_on_disk"] is False
 
 
 async def test_latest_videos_downloaded_today_ignores_part_files(client, tmp_path):
@@ -317,7 +317,7 @@ async def test_latest_videos_downloaded_today_ignores_part_files(client, tmp_pat
             r = await c.get("/latest-videos?hours=24")
 
     videos = r.json()["videos"]
-    assert videos[0]["downloaded_today"] is False
+    assert videos[0]["downloaded_on_disk"] is False
 
 
 async def test_latest_videos_downloaded_today_no_folder(client, tmp_path):
@@ -333,7 +333,7 @@ async def test_latest_videos_downloaded_today_no_folder(client, tmp_path):
             r = await c.get("/latest-videos?hours=24")
 
     assert r.status_code == 200
-    assert r.json()["videos"][0]["downloaded_today"] is False
+    assert r.json()["videos"][0]["downloaded_on_disk"] is False
 
 
 async def test_latest_videos_downloaded_today_strips_seq_prefix(client, tmp_path):
@@ -353,7 +353,7 @@ async def test_latest_videos_downloaded_today_strips_seq_prefix(client, tmp_path
             await c.put("/settings", json={"output_path": str(tmp_path)})
             r = await c.get("/latest-videos?hours=24")
 
-    assert r.json()["videos"][0]["downloaded_today"] is True
+    assert r.json()["videos"][0]["downloaded_on_disk"] is True
 
 
 async def test_latest_videos_downloaded_today_highlight_prefix_matches_plain_file(client, tmp_path):
@@ -374,7 +374,7 @@ async def test_latest_videos_downloaded_today_highlight_prefix_matches_plain_fil
             await c.put("/settings", json={"output_path": str(tmp_path)})
             r = await c.get("/latest-videos?hours=24")
 
-    assert r.json()["videos"][0]["downloaded_today"] is True
+    assert r.json()["videos"][0]["downloaded_on_disk"] is True
 
 
 async def test_latest_videos_downloaded_today_plain_matches_highlight_file(client, tmp_path):
@@ -395,7 +395,7 @@ async def test_latest_videos_downloaded_today_plain_matches_highlight_file(clien
             await c.put("/settings", json={"output_path": str(tmp_path)})
             r = await c.get("/latest-videos?hours=24")
 
-    assert r.json()["videos"][0]["downloaded_today"] is True
+    assert r.json()["videos"][0]["downloaded_on_disk"] is True
 
 
 async def test_latest_videos_downloaded_today_interior_highlight_not_stripped(client, tmp_path):
@@ -414,4 +414,61 @@ async def test_latest_videos_downloaded_today_interior_highlight_not_stripped(cl
             await c.put("/settings", json={"output_path": str(tmp_path)})
             r = await c.get("/latest-videos?hours=24")
 
-    assert r.json()["videos"][0]["downloaded_today"] is False
+    assert r.json()["videos"][0]["downloaded_on_disk"] is False
+
+
+async def test_latest_videos_downloaded_on_disk_matches_older_subfolder(client, tmp_path):
+    """檔案在『非今日』的舊日期子資料夾時也應算已下載（證明掃描整個根目錄，而非僅今日）。"""
+    channels = [{"channel_id": "UC_a", "title": "Chan A"}]
+    video = _make_video("v_old_dir", hours_ago=1)
+
+    old_dir = tmp_path / "20250101"
+    old_dir.mkdir(parents=True)
+    sanitized = main._sanitize_filename(video["title"])
+    (old_dir / f"03_{sanitized}.mp3").write_bytes(b"")
+
+    with patch("main.load_credentials", return_value=_mock_valid_creds()), \
+         patch("main.build", return_value=_mock_youtube_subscriptions(channels)), \
+         patch("main.fetch_channel_videos_api", return_value=("UC_a", [video])):
+        async with client as c:
+            await c.put("/settings", json={"output_path": str(tmp_path)})
+            r = await c.get("/latest-videos?hours=24")
+
+    assert r.json()["videos"][0]["downloaded_on_disk"] is True
+
+
+async def test_latest_videos_downloaded_on_disk_part_in_any_subfolder_false(client, tmp_path):
+    """任一子資料夾中的 .part 半下載檔不算已下載。"""
+    channels = [{"channel_id": "UC_a", "title": "Chan A"}]
+    video = _make_video("v_part", hours_ago=1)
+
+    sub = tmp_path / "20250101"
+    sub.mkdir(parents=True)
+    sanitized = main._sanitize_filename(video["title"])
+    (sub / f"01_{sanitized}.mp3.part").write_bytes(b"")
+
+    with patch("main.load_credentials", return_value=_mock_valid_creds()), \
+         patch("main.build", return_value=_mock_youtube_subscriptions(channels)), \
+         patch("main.fetch_channel_videos_api", return_value=("UC_a", [video])):
+        async with client as c:
+            await c.put("/settings", json={"output_path": str(tmp_path)})
+            r = await c.get("/latest-videos?hours=24")
+
+    assert r.json()["videos"][0]["downloaded_on_disk"] is False
+
+
+async def test_latest_videos_downloaded_on_disk_missing_root_false(client, tmp_path):
+    """output_path 不存在時所有影片皆 false 且不報錯。"""
+    channels = [{"channel_id": "UC_a", "title": "Chan A"}]
+    video = _make_video("v_noroot", hours_ago=1)
+    missing_root = tmp_path / "does-not-exist"
+
+    with patch("main.load_credentials", return_value=_mock_valid_creds()), \
+         patch("main.build", return_value=_mock_youtube_subscriptions(channels)), \
+         patch("main.fetch_channel_videos_api", return_value=("UC_a", [video])):
+        async with client as c:
+            await c.put("/settings", json={"output_path": str(missing_root)})
+            r = await c.get("/latest-videos?hours=24")
+
+    assert r.status_code == 200
+    assert r.json()["videos"][0]["downloaded_on_disk"] is False

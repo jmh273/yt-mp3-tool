@@ -122,9 +122,9 @@ describe('LatestVideosFeed', () => {
     expect(download.selected[0].video_id).toBe('v1')
   })
 
-  it('downloaded_today=true 時 checkbox 預設為 disabled 並顯示「已下載」徽章', async () => {
+  it('downloaded_on_disk=true 時 checkbox 預設為 disabled 並顯示「已下載」徽章', async () => {
     const { apiGet } = await import('@/api')
-    const video = { ...makeVideo('v1', 1), downloaded_today: true }
+    const video = { ...makeVideo('v1', 1), downloaded_on_disk: true }
     vi.mocked(apiGet)
       .mockResolvedValueOnce({ latest_hours: 24 })
       .mockResolvedValueOnce({ videos: [video] })
@@ -139,7 +139,7 @@ describe('LatestVideosFeed', () => {
 
   it('打開「允許再次下載」後，已下載 checkbox 變為可勾選，徽章仍顯示', async () => {
     const { apiGet } = await import('@/api')
-    const video = { ...makeVideo('v1', 1), downloaded_today: true }
+    const video = { ...makeVideo('v1', 1), downloaded_on_disk: true }
     vi.mocked(apiGet)
       .mockResolvedValueOnce({ latest_hours: 24 })
       .mockResolvedValueOnce({ videos: [video] })
@@ -157,7 +157,7 @@ describe('LatestVideosFeed', () => {
 
   it('關閉「允許再次下載」時，已下載的影片會從 download.selected 移除', async () => {
     const { apiGet } = await import('@/api')
-    const video = { ...makeVideo('v1', 1), downloaded_today: true }
+    const video = { ...makeVideo('v1', 1), downloaded_on_disk: true }
     vi.mocked(apiGet)
       .mockResolvedValueOnce({ latest_hours: 24 })
       .mockResolvedValueOnce({ videos: [video] })

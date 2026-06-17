@@ -1249,7 +1249,8 @@ def _extract_channel_keywords(channel_resource: dict) -> list[str]:
 def _downloaded_stems_all() -> set[str]:
     """掃描整個 output_path 下所有日期子資料夾的 mp3 stems（去掉序號前綴）。
 
-    用於 discovery 過濾「已下載」影片。比 `_today_downloaded_stems` 視野更廣。
+    用於 discovery 過濾與 /latest-videos 的 downloaded_on_disk 旗標：只要影片檔案存在於
+    下載根目錄任一子資料夾即視為已下載（不限今日）。
     """
     import re
     seq_re = re.compile(r"^\d+_")
@@ -2069,9 +2070,9 @@ async def get_latest_videos(
     )
     videos.sort(key=lambda v: v["published"], reverse=True)
 
-    downloaded_stems = _today_downloaded_stems()
+    downloaded_stems = _downloaded_stems_all()
     for v in videos:
-        v["downloaded_today"] = (
+        v["downloaded_on_disk"] = (
             _strip_highlight_prefix(_sanitize_filename(v.get("title", ""))) in downloaded_stems
         )
 
@@ -2263,29 +2264,6 @@ def _resolve_output_child(output_path: str, child: str | None) -> pathlib.Path:
     except ValueError:
         raise HTTPException(status_code=400, detail="target_dir escapes output_path")
     return target
-
-
-def _today_downloaded_stems() -> set[str]:
-    """Return file stems in today's download folder, stripped of `^\\d+_` sequence prefix.
-
-    Ignores `.part` (in-progress) files and any non-regular entries. Returns an empty set
-    if the folder does not exist or is unreadable.
-    """
-    import re
-    seq_re = re.compile(r"^\d+_")
-    try:
-        entries = list(_today_download_dir().iterdir())
-    except (FileNotFoundError, NotADirectoryError):
-        return set()
-    stems: set[str] = set()
-    for entry in entries:
-        if not entry.is_file():
-            continue
-        if entry.suffix == ".part":
-            continue
-        stem = entry.stem
-        stems.add(_strip_highlight_prefix(seq_re.sub("", stem, count=1)))
-    return stems
 
 
 def _format_seq(n: int) -> str:

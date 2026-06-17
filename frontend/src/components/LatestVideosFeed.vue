@@ -111,7 +111,7 @@ function loadMore() {
 const allowRedownload = ref(false)
 
 function isAlreadyDownloaded(v: VideoItem): boolean {
-  return download.isDownloaded(v.video_id) || v.downloaded_today === true
+  return download.isDownloaded(v.video_id) || v.downloaded_on_disk === true
 }
 
 watch(allowRedownload, (now, prev) => {

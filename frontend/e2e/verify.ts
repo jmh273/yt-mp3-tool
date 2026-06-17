@@ -14,6 +14,7 @@ const known: Record<string, () => Promise<unknown>> = {
   'subscription-reconciliation': () => import('./verify-subscription-reconciliation'),
   'download-panel-prefill-fields': () => import('./verify-download-panel-prefill-fields'),
   'strip-highlight-prefix-dedup': () => import('./verify-strip-highlight-prefix-dedup'),
+  'downloaded-on-disk-rootwide': () => import('./verify-downloaded-on-disk-rootwide'),
 }
 
 const run = known[change]

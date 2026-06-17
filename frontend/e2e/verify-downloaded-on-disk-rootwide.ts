@@ -2,32 +2,32 @@ import type { BrowserContext, Page } from 'playwright'
 import { runVerifySuite, mockJson } from './verify-helpers'
 
 // 對照 spec（latest-videos-feed）：
-// 後端依「去掉開頭【精華】標記」後的 stem 比對已下載，並回傳 downloaded_on_disk。
-// 此 e2e 驗證前端 UI：當帶「【精華】」前綴的影片被後端標記 downloaded_on_disk=true 時，
-// latest-videos-feed SHALL 顯示「✅ 已下載」徽章且 checkbox 停用；未下載者不顯示徽章、可勾選。
-// （真正的前綴正規化比對邏輯由 backend 單元測試涵蓋；此處 API 為 mock。）
+// /latest-videos 的已下載比對範圍由「今日資料夾」擴大為「整個 output_path 遞迴掃描」，
+// 回應欄位由 downloaded_today 更名為 downloaded_on_disk。
+// 此 e2e 驗證前端 UI：downloaded_on_disk=true 的影片 SHALL 顯示「✅ 已下載」徽章且 checkbox 停用；
+// false 者不顯示徽章、可勾選。（whole-root 掃描的正確性由 backend 單元測試涵蓋；此處 API 為 mock。）
 
-const HIGHLIGHT_VIDEO = {
-  video_id: 'hl0001',
-  title: '【精華】My Talk',
-  url: 'https://www.youtube.com/watch?v=hl0001',
-  thumbnail: 'https://i.ytimg.com/vi/hl0001/mqdefault.jpg',
+const ON_DISK_VIDEO = {
+  video_id: 'od0001',
+  title: '舊片重現',
+  url: 'https://www.youtube.com/watch?v=od0001',
+  thumbnail: 'https://i.ytimg.com/vi/od0001/mqdefault.jpg',
   published: new Date(Date.now() - 3600_000).toISOString(),
   duration_seconds: 600,
-  channel_id: 'UC_hl',
-  channel_title: 'Highlight Channel',
-  downloaded_on_disk: true, // 後端已比對：精華版對上既有原版 → 視為已下載
+  channel_id: 'UC_od',
+  channel_title: 'On Disk Channel',
+  downloaded_on_disk: true, // 後端在任一日期子資料夾找到對應檔案
 }
 
-const PLAIN_VIDEO = {
-  video_id: 'pl0001',
-  title: 'Fresh Song',
-  url: 'https://www.youtube.com/watch?v=pl0001',
-  thumbnail: 'https://i.ytimg.com/vi/pl0001/mqdefault.jpg',
+const FRESH_VIDEO = {
+  video_id: 'fr0001',
+  title: 'Brand New',
+  url: 'https://www.youtube.com/watch?v=fr0001',
+  thumbnail: 'https://i.ytimg.com/vi/fr0001/mqdefault.jpg',
   published: new Date(Date.now() - 7200_000).toISOString(),
   duration_seconds: 300,
-  channel_id: 'UC_pl',
-  channel_title: 'Plain Channel',
+  channel_id: 'UC_fr',
+  channel_title: 'Fresh Channel',
   downloaded_on_disk: false,
 }
 
@@ -46,7 +46,7 @@ async function commonMocks(ctx: BrowserContext) {
     download_concurrency: 3,
     drive_upload_concurrency: 3,
   })
-  await mockJson(ctx, '**/latest-videos*', { videos: [HIGHLIGHT_VIDEO, PLAIN_VIDEO] })
+  await mockJson(ctx, '**/latest-videos*', { videos: [ON_DISK_VIDEO, FRESH_VIDEO] })
 }
 
 function cardByTitle(page: Page, title: string) {
@@ -54,7 +54,7 @@ function cardByTitle(page: Page, title: string) {
 }
 
 runVerifySuite({
-  title: 'verify strip-highlight-prefix-dedup',
+  title: 'verify downloaded-on-disk-rootwide',
   headless: true,
   slowMo: 0,
   tasks: [
@@ -73,26 +73,42 @@ runVerifySuite({
       },
     },
     {
-      name: '【精華】影片顯示已下載徽章且停用',
+      name: 'downloaded_on_disk 影片顯示徽章且停用',
       run: async ({ page, record }) => {
-        const card = cardByTitle(page, '【精華】My Talk')
+        const card = cardByTitle(page, '舊片重現')
         const badgeVisible = await card.locator('.dl-badge').isVisible()
         const checkboxDisabled = await card.locator('input.video-checkbox').isDisabled()
         record(
-          '精華版（downloaded_on_disk=true）顯示徽章並停用 checkbox',
+          'downloaded_on_disk=true 顯示徽章並停用 checkbox',
           badgeVisible && checkboxDisabled ? 'PASS' : 'FAIL',
           `badgeVisible=${badgeVisible} checkboxDisabled=${checkboxDisabled}`,
         )
       },
     },
     {
+      name: '允許再次下載開啟後可勾選且徽章仍在',
+      run: async ({ page, record }) => {
+        await page.locator('.redownload-toggle input[type="checkbox"]').setChecked(true)
+        const card = cardByTitle(page, '舊片重現')
+        const badgeVisible = await card.locator('.dl-badge').isVisible()
+        const checkboxEnabled = await card.locator('input.video-checkbox').isEnabled()
+        record(
+          '開啟覆寫後 checkbox 可勾選、徽章仍顯示',
+          badgeVisible && checkboxEnabled ? 'PASS' : 'FAIL',
+          `badgeVisible=${badgeVisible} checkboxEnabled=${checkboxEnabled}`,
+        )
+        // 還原
+        await page.locator('.redownload-toggle input[type="checkbox"]').setChecked(false)
+      },
+    },
+    {
       name: '未下載影片無徽章且可勾選',
       run: async ({ page, record }) => {
-        const card = cardByTitle(page, 'Fresh Song')
+        const card = cardByTitle(page, 'Brand New')
         const badgeCount = await card.locator('.dl-badge').count()
         const checkboxEnabled = await card.locator('input.video-checkbox').isEnabled()
         record(
-          '未下載影片不顯示徽章且 checkbox 可勾選',
+          '未下載影片不顯示徽章且可勾選',
           badgeCount === 0 && checkboxEnabled ? 'PASS' : 'FAIL',
           `badgeCount=${badgeCount} checkboxEnabled=${checkboxEnabled}`,
         )

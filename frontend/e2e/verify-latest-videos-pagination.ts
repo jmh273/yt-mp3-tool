@@ -26,7 +26,7 @@ function makeVideos(n: number) {
       duration_seconds: 600,
       channel_id: 'UC_verify',
       channel_title: '驗證頻道',
-      downloaded_today: false,
+      downloaded_on_disk: false,
     }
   })
 }
