@@ -354,3 +354,64 @@ async def test_latest_videos_downloaded_today_strips_seq_prefix(client, tmp_path
             r = await c.get("/latest-videos?hours=24")
 
     assert r.json()["videos"][0]["downloaded_today"] is True
+
+
+async def test_latest_videos_downloaded_today_highlight_prefix_matches_plain_file(client, tmp_path):
+    """標題帶「【精華】」前綴的影片，應對上不含前綴的既有檔案（精華版重新上架）。"""
+    channels = [{"channel_id": "UC_a", "title": "Chan A"}]
+    highlight = _make_video("v_hl", hours_ago=1)
+    highlight["title"] = "【精華】My Talk"
+
+    today_dir = tmp_path / datetime.now().strftime("%Y%m%d")
+    today_dir.mkdir(parents=True)
+    # 既有檔案是不含前綴的原版（sanitize("My Talk") == "My Talk"）
+    (today_dir / "03_My Talk.mp3").write_bytes(b"")
+
+    with patch("main.load_credentials", return_value=_mock_valid_creds()), \
+         patch("main.build", return_value=_mock_youtube_subscriptions(channels)), \
+         patch("main.fetch_channel_videos_api", return_value=("UC_a", [highlight])):
+        async with client as c:
+            await c.put("/settings", json={"output_path": str(tmp_path)})
+            r = await c.get("/latest-videos?hours=24")
+
+    assert r.json()["videos"][0]["downloaded_today"] is True
+
+
+async def test_latest_videos_downloaded_today_plain_matches_highlight_file(client, tmp_path):
+    """反向：不含前綴的候選影片，應對上磁碟上含「精華」前綴的既有檔案。"""
+    channels = [{"channel_id": "UC_a", "title": "Chan A"}]
+    plain = _make_video("v_plain", hours_ago=1)
+    plain["title"] = "My Talk"
+
+    today_dir = tmp_path / datetime.now().strftime("%Y%m%d")
+    today_dir.mkdir(parents=True)
+    # 既有檔案是先前下載的精華版（sanitize("【精華】My Talk") == "精華_My Talk"）
+    (today_dir / "02_精華_My Talk.mp3").write_bytes(b"")
+
+    with patch("main.load_credentials", return_value=_mock_valid_creds()), \
+         patch("main.build", return_value=_mock_youtube_subscriptions(channels)), \
+         patch("main.fetch_channel_videos_api", return_value=("UC_a", [plain])):
+        async with client as c:
+            await c.put("/settings", json={"output_path": str(tmp_path)})
+            r = await c.get("/latest-videos?hours=24")
+
+    assert r.json()["videos"][0]["downloaded_today"] is True
+
+
+async def test_latest_videos_downloaded_today_interior_highlight_not_stripped(client, tmp_path):
+    """標題中間（非開頭）出現「精華」不應被正規化，無對應檔案時仍為 false。"""
+    channels = [{"channel_id": "UC_a", "title": "Chan A"}]
+    video = _make_video("v_mid", hours_ago=1)
+    video["title"] = "年度精華回顧"
+
+    today_dir = tmp_path / datetime.now().strftime("%Y%m%d")
+    today_dir.mkdir(parents=True)  # 空資料夾
+
+    with patch("main.load_credentials", return_value=_mock_valid_creds()), \
+         patch("main.build", return_value=_mock_youtube_subscriptions(channels)), \
+         patch("main.fetch_channel_videos_api", return_value=("UC_a", [video])):
+        async with client as c:
+            await c.put("/settings", json={"output_path": str(tmp_path)})
+            r = await c.get("/latest-videos?hours=24")
+
+    assert r.json()["videos"][0]["downloaded_today"] is False

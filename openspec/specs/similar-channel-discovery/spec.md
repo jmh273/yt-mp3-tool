@@ -69,6 +69,8 @@ Defines the「🔍 同類新頻道」discovery feature — a backend pipeline + 
 
 系統 SHALL 以兩階段策略建構候選影片池：fast phase 使用 `videos.list?chart=mostPopular` 依 top categories 撈熱門影片；full phase 額外使用 `search.list?type=channel&q=keywords` 找相似頻道並抓其 uploads。兩 phase 結果合併、過濾、排序後 cache 整份候選池。
 
+已下載過濾 SHALL 以影片標題經 `_sanitize_filename` 後的 stem 與下載輸出資料夾內既有檔名 stem 比對；比對前兩側 SHALL 先正規化掉開頭的 `【精華】` 標記（即移除單一個位於開頭的 `精華` token 及其後緊鄰、由清洗全形括號 `【】` 產生的分隔符 `_`/空白），使 `【精華】xxx` 與 `xxx` 互相視為同一支。位於標題中間的 `精華` 字樣 SHALL NOT 被移除。
+
 #### Scenario: Fast phase 先回傳結果
 
 - **WHEN** 前端呼叫 `GET /discovery/similar-channels?phase=fast`
@@ -91,7 +93,17 @@ Defines the「🔍 同類新頻道」discovery feature — a backend pipeline + 
 #### Scenario: 過濾已下載影片
 
 - **WHEN** 候選池建構完成
-- **THEN** 系統 MUST 移除已存在於使用者下載輸出資料夾的影片（依檔名 stem 比對）
+- **THEN** 系統 MUST 移除已存在於使用者下載輸出資料夾的影片（依檔名 stem 比對，比對前套用 `【精華】` 前綴正規化）
+
+#### Scenario: 精華前綴影片視為已下載
+
+- **WHEN** 候選影片標題為 `「【精華】某某訪談」`，且下載輸出資料夾內已有檔名 stem 為 `某某訪談` 的檔案
+- **THEN** 系統 MUST 將該候選影片視為已下載並移除
+
+#### Scenario: 標題中間的精華不被當作前綴
+
+- **WHEN** 候選影片標題為 `「2025 精華回顧」`，且下載輸出資料夾內無對應 stem
+- **THEN** 系統 MUST NOT 因正規化而誤判其為已下載（僅移除開頭 `【精華】` 標記）
 
 #### Scenario: 相關性過濾（profile.keywords 非空時）
 

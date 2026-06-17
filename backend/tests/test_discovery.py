@@ -381,6 +381,21 @@ def test_filter_drops_downloaded(monkeypatch, tmp_path):
     assert "v2" in ids
 
 
+def test_filter_drops_downloaded_highlight_prefix(monkeypatch, tmp_path):
+    """候選帶「【精華】」前綴時，應對上磁碟上不含前綴的既有 stem 而被過濾。"""
+    # 磁碟上的既有檔案為不含前綴的原版（_downloaded_stems_all 已套 _strip_highlight_prefix）
+    monkeypatch.setattr(main, "_downloaded_stems_all", lambda: {"某某訪談"})
+    videos = [
+        {"video_id": "v1", "title": "【精華】某某訪談", "channel_id": "UC_a"},
+        {"video_id": "v2", "title": "年度精華回顧", "channel_id": "UC_b"},  # 中間的精華不該被當前綴
+    ]
+    profile = {"subscribed_channel_ids": set()}
+    out = main._filter_candidates(videos, profile)
+    ids = [v["video_id"] for v in out]
+    assert "v1" not in ids, "精華版應對上原版 stem 而被過濾"
+    assert "v2" in ids, "標題中間含『精華』不應被誤判為已下載"
+
+
 # ── endpoint integration tests ────────────────────────────────────────────────
 
 

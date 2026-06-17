@@ -2,6 +2,7 @@ import asyncio
 import json
 import os
 import pathlib
+import re
 import shutil
 import sys
 from contextlib import asynccontextmanager
@@ -200,6 +201,21 @@ def _sanitize_filename(name: str) -> str:
     if not safe:
         return "untitled"
     return safe[:120]
+
+
+_HIGHLIGHT_PREFIX_RE = re.compile(r"^精華[ _]?")
+
+
+def _strip_highlight_prefix(stem: str) -> str:
+    """Normalize away a leading `【精華】` highlight marker on a sanitized stem.
+
+    `_sanitize_filename("【精華】My Talk")` yields `精華_My Talk` (full-width 【】 → `_`,
+    leading `_` stripped, `】` → `_`). For "is this already downloaded?" comparisons we
+    want `【精華】xxx` to match a plain `xxx` re-upload, so we drop a single leading `精華`
+    token plus any immediately following separator. Only the start of the stem is touched;
+    an interior `精華` (e.g. `年度精華回顧`) is left intact.
+    """
+    return _HIGHLIGHT_PREFIX_RE.sub("", stem, count=1)
 
 
 def parse_iso_duration(duration: str) -> int:
@@ -1248,7 +1264,7 @@ def _downloaded_stems_all() -> set[str]:
                 continue
             if entry.suffix == ".part":
                 continue
-            stems.add(seq_re.sub("", entry.stem, count=1))
+            stems.add(_strip_highlight_prefix(seq_re.sub("", entry.stem, count=1)))
     except OSError:
         return set()
     return stems
@@ -1683,8 +1699,9 @@ def _filter_candidates(videos: list[dict], profile: dict) -> list[dict]:
             continue
         if v.get("channel_id") in subscribed:
             continue
-        # 已下載比對：用標題 sanitize 後的 stem 比對（與下載時的命名規則一致）
-        title_stem = _sanitize_filename(v.get("title", ""))
+        # 已下載比對：用標題 sanitize 後的 stem 比對（與下載時的命名規則一致）；
+        # 兩側皆去掉開頭「【精華】」標記，使精華版重新上架與原版互判為同一支。
+        title_stem = _strip_highlight_prefix(_sanitize_filename(v.get("title", "")))
         if title_stem in downloaded:
             continue
         # 相關性過濾（修法 2：嚴格）
@@ -2054,7 +2071,9 @@ async def get_latest_videos(
 
     downloaded_stems = _today_downloaded_stems()
     for v in videos:
-        v["downloaded_today"] = _sanitize_filename(v.get("title", "")) in downloaded_stems
+        v["downloaded_today"] = (
+            _strip_highlight_prefix(_sanitize_filename(v.get("title", ""))) in downloaded_stems
+        )
 
     return {"videos": videos}
 
@@ -2265,7 +2284,7 @@ def _today_downloaded_stems() -> set[str]:
         if entry.suffix == ".part":
             continue
         stem = entry.stem
-        stems.add(seq_re.sub("", stem, count=1))
+        stems.add(_strip_highlight_prefix(seq_re.sub("", stem, count=1)))
     return stems
 
 
