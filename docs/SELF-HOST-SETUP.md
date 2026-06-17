@@ -34,7 +34,8 @@ E. （日後）用 update.bat 更新
 
 ## A. 下載並解壓
 
-1. 到本工具的 GitHub releases 頁，下載最新版的 `yt-mp3-tool-vX.Y.Z-windows-x64.zip`。
+1. 到本工具的 GitHub releases 頁，下載最新版的 `yt-mp3-tool-vX.Y.Z-windows-x64.zip`：
+   <https://github.com/jmh273/yt-mp3-tool/releases/latest>
 2. 解壓到一個你喜歡的資料夾，建議 `C:\Tools\YT-MP3\`。
 3. 解開後裡面應該有 `yt-mp3-tool.exe`、`ffmpeg.exe`、`mp3gain.exe`、`update.bat`、`THIRD-PARTY-NOTICES.txt` 等。
 
