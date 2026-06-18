@@ -13,7 +13,7 @@
 
 1. 到 [Releases 頁](https://github.com/jmh273/yt-mp3-tool/releases/latest)下載最新的 `yt-mp3-tool-vX.Y.Z-windows-x64.zip`。
 2. 解壓到一個資料夾（建議 `C:\Tools\YT-MP3\`）。zip 已內建 `ffmpeg.exe` 與 `mp3gain.exe`。
-3. 到 Google Cloud Console 申請**你自己的** OAuth 憑證（桌面應用程式型），下載後命名為 `client_secret.json`，放到 `yt-mp3-tool.exe` 同一個資料夾。
+3. 到 Google Cloud Console 申請**你自己的** OAuth 憑證（電腦版應用程式 / Desktop app 型），下載後命名為 `client_secret.json`，放到 `yt-mp3-tool.exe` 同一個資料夾。
 4. 雙擊 `yt-mp3-tool.exe`，瀏覽器會自動開到 <http://localhost:8000/>，點「登入 Google」完成授權。
 
 > 📖 **完整圖解步驟**（含 Google Cloud 建專案 / 啟用 API / OAuth 同意畫面 / 憑證下載 / 常見錯誤）請看
@@ -83,7 +83,7 @@
 1. 前往 [Google Cloud Console](https://console.cloud.google.com/)
 2. 建立新專案（或選擇現有專案）
 3. 啟用 **YouTube Data API v3**（用 Drive 上傳功能再額外啟用 **Google Drive API**）
-4. 「憑證」→「建立憑證」→「OAuth 用戶端 ID」→ 應用程式類型選 **桌面應用程式（Desktop app）**
+4. 「憑證」→「建立憑證」→「OAuth 用戶端 ID」→ 應用程式類型選 **電腦版應用程式（Desktop app）**
 5. 下載 JSON 憑證，重新命名為 `client_secret.json`，放置於 `backend/` 資料夾（dev 模式從這裡讀；打包後則放 exe 同目錄）
 
 > OAuth 同意畫面的設定細節（發布到正式、未驗證警告處理等）與 SELF-HOST 完全相同，見 [docs/SELF-HOST-SETUP.md](docs/SELF-HOST-SETUP.md) B 段。
