@@ -23,8 +23,21 @@ export interface ProgressItem {
   error?: string
 }
 
+const SELECTED_STORAGE_KEY = 'yt_mp3_selected'
+
+function loadSelectedVideos(): VideoItem[] {
+  const stored = localStorage.getItem(SELECTED_STORAGE_KEY)
+  if (!stored) return []
+  try {
+    const parsed = JSON.parse(stored)
+    return Array.isArray(parsed) ? parsed : []
+  } catch {
+    return []
+  }
+}
+
 export const useDownloadStore = defineStore('download', () => {
-  const selected = ref<VideoItem[]>([])
+  const selected = ref<VideoItem[]>(loadSelectedVideos())
   const taskId = ref<string | null>(null)
   const progress = ref<Record<string, ProgressItem>>({})
   const downloading = ref(false)
@@ -48,6 +61,10 @@ export const useDownloadStore = defineStore('download', () => {
   watch(autoPipeline, (v) => {
     localStorage.setItem('yt_mp3_auto_pipeline', String(v))
   }, { flush: 'sync' })
+
+  watch(selected, (videos) => {
+    localStorage.setItem(SELECTED_STORAGE_KEY, JSON.stringify(videos))
+  }, { deep: true, flush: 'sync' })
 
   function markAsDownloaded(videoId: string) {
     downloadedIds.value.add(videoId)
@@ -77,6 +94,7 @@ export const useDownloadStore = defineStore('download', () => {
 
   function clearAll() {
     selected.value = []
+    progress.value = {}
   }
 
   async function startDownload(

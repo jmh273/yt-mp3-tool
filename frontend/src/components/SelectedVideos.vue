@@ -3,6 +3,19 @@
     <div class="header">
       <span>{{ download.selected.length > 0 ? `已選取 ${download.selected.length} 支影片` : '尚未選取影片' }}</span>
 
+      <ul v-if="download.selected.length > 0" class="selected-list">
+        <li v-for="v in download.selected" :key="v.video_id" class="selected-item">
+          <span class="stitle" :title="v.title">{{ v.title }}</span>
+          <button
+            class="remove"
+            type="button"
+            title="移除"
+            :disabled="download.downloading"
+            @click="download.toggle(v)"
+          >✕</button>
+        </li>
+      </ul>
+
       <div class="format-row">
         <label class="field">
           <span class="field-label">格式</span>
@@ -51,6 +64,7 @@
           type="text"
           v-model="download.targetDirPath"
           :disabled="download.downloading"
+          @input="targetDirEdited = true"
         />
       </label>
 
@@ -74,11 +88,11 @@
       </div>
     </div>
 
-    <div v-if="download.downloading" class="progress-list">
+    <div v-if="download.downloading || hasProgress" class="progress-list">
       <div v-for="(item, vid) in download.progress" :key="vid" class="progress-item">
         <span class="ptitle" :title="item.title">{{ item.title }}</span>
         <div class="bar-wrap">
-          <div class="bar" :style="{ width: item.percent + '%' }" :class="item.status" />
+          <div class="bar" :style="{ width: item.status === 'error' ? '100%' : item.percent + '%' }" :class="item.status" />
         </div>
         <span class="pstatus">
           {{ statusLabel(item.status) }}
@@ -96,7 +110,7 @@
 </template>
 
 <script setup lang="ts">
-import { computed, onMounted, ref, watch } from 'vue'
+import { computed, onActivated, onMounted, ref, watch } from 'vue'
 import { apiGet } from '@/api'
 import { useDownloadStore } from '@/stores/download'
 import { joinPath, rolloverDatePrefix, todayYyyymmdd } from '@/utils/dateFolder'
@@ -125,6 +139,9 @@ watch(seqEnabled, (v) => {
 const startSeqInput = ref('')
 const existingSeqs = ref<number[]>([])
 const outputPath = ref('')
+const targetDirEdited = ref(false)
+let targetDirSeqTimer: ReturnType<typeof setTimeout> | null = null
+let fetchSeqToken = 0
 const START_SEQ_RE = /^\d{1,10}$/
 
 const startSeqInvalid = computed(
@@ -146,9 +163,20 @@ function formatPad(n: number): string {
   return String(n).padStart(width, '0')
 }
 
+function basename(path: string): string {
+  return path.replace(/[\\/]+$/, '').split(/[\\/]/).pop() ?? ''
+}
+
+function nextSeqUrl() {
+  const dir = basename(download.targetDirPath)
+  return dir ? `/download/next-seq?dir=${encodeURIComponent(dir)}` : '/download/next-seq'
+}
+
 async function fetchNextSeq() {
+  const token = ++fetchSeqToken
   try {
-    const data = await apiGet<{ next_seq: string; existing: number[] }>('/download/next-seq')
+    const data = await apiGet<{ next_seq: string; existing: number[] }>(nextSeqUrl())
+    if (token !== fetchSeqToken) return
     startSeqInput.value = data.next_seq
     existingSeqs.value = data.existing ?? []
   } catch {
@@ -156,8 +184,18 @@ async function fetchNextSeq() {
   }
 }
 
-function basename(path: string): string {
-  return path.replace(/[\\/]+$/, '').split(/[\\/]/).pop() ?? ''
+function dirname(path: string): string {
+  const sep = path.includes('\\') ? '\\' : '/'
+  return path.replace(/[\\/]+$/, '').split(/[\\/]/).slice(0, -1).join(sep)
+}
+
+function refreshDefaultTargetDir() {
+  if (!download.targetDirPath || targetDirEdited.value) return
+  const leaf = basename(download.targetDirPath)
+  const refreshed = rolloverDatePrefix(leaf)
+  if (refreshed === leaf) return
+  const parent = dirname(download.targetDirPath)
+  download.targetDirPath = parent ? joinPath(parent, refreshed) : refreshed
 }
 
 async function loadSettings() {
@@ -172,11 +210,18 @@ async function loadSettings() {
       ? rolloverDatePrefix(download.lastWorkDirName)
       : todayYyyymmdd()
     download.targetDirPath = joinPath(outputPath.value, base)
+  } else {
+    refreshDefaultTargetDir()
   }
 }
 
-onMounted(() => {
-  loadSettings()
+onMounted(async () => {
+  await loadSettings()
+  await fetchNextSeq()
+})
+
+onActivated(() => {
+  refreshDefaultTargetDir()
   fetchNextSeq()
 })
 
@@ -190,11 +235,26 @@ watch(
 watch(
   () => download.downloading,
   (v, old) => {
-    if (old === true && v === false) fetchNextSeq()
+    if (old === true && v === false) {
+      refreshDefaultTargetDir()
+      fetchNextSeq()
+    }
   },
 )
 
-function onDownload() {
+watch(
+  () => download.targetDirPath,
+  () => {
+    if (targetDirSeqTimer) clearTimeout(targetDirSeqTimer)
+    targetDirSeqTimer = setTimeout(() => {
+      fetchNextSeq()
+    }, 300)
+  },
+)
+
+async function onDownload() {
+  refreshDefaultTargetDir()
+  await fetchNextSeq()
   download.startDownload(format.value, quality.value, {
     seqEnabled: seqEnabled.value,
     startSeq: seqEnabled.value ? startSeqInput.value : null,
@@ -204,6 +264,7 @@ function onDownload() {
 
 const doneCount = computed(() => Object.values(download.progress).filter((i) => i.status === 'done').length)
 const errorCount = computed(() => Object.values(download.progress).filter((i) => i.status === 'error').length)
+const hasProgress = computed(() => Object.keys(download.progress).length > 0)
 
 function statusLabel(status: string) {
   return { pending: '等待中', downloading: '下載中', converting: '轉換中', done: '完成', error: '失敗' }[status] ?? status
@@ -236,6 +297,11 @@ function statusLabel(status: string) {
 .auto-pipeline-label { display: inline-flex; align-items: center; gap: 0.35rem; font-size: 0.85rem; cursor: pointer; }
 .hint { color: #888; font-size: 0.75rem; font-weight: normal; }
 .start-seq-input { width: 5rem; padding: 0.35rem 0.4rem; font-size: 0.85rem; border: 1px solid #ccc; border-radius: 4px; text-align: center; font-variant-numeric: tabular-nums; }
+.selected-list { list-style: none; margin: 0; padding: 0; width: 100%; max-height: 8.5rem; overflow-y: auto; display: flex; flex-direction: column; gap: 0.25rem; }
+.selected-item { display: flex; align-items: center; gap: 0.5rem; font-size: 0.82rem; }
+.stitle { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.remove { flex-shrink: 0; background: transparent; border: none; color: #999; cursor: pointer; font-size: 0.85rem; line-height: 1; padding: 0.1rem 0.3rem; border-radius: 3px; }
+.remove:hover:not(:disabled) { color: #d00; background: #f5f5f5; }
 .seq-warn { margin: 0; font-size: 0.78rem; color: #d97706; align-self: stretch; }
 .actions { display: flex; gap: 0.5rem; width: 100%; }
 .clear { flex: 1; background: transparent; border: 1px solid #888; color: #555; padding: 0.4rem; border-radius: 4px; cursor: pointer; font-size: 0.85rem; }

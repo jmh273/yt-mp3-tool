@@ -12,6 +12,7 @@ export const mockRouter = {
 beforeEach(() => {
   setActivePinia(createPinia())
   vi.clearAllMocks()
+  localStorage.clear()
 })
 
 // 全域 RouterLink stub，避免元件掛載時出現 "Failed to resolve component" 警告

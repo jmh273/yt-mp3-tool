@@ -42,7 +42,7 @@ describe('SelectedVideos', () => {
     expect(wrapper.find('[data-testid="download-target-dir"]').exists()).toBe(true)
 
     // 掛載即觸發 next-seq 預填
-    expect(vi.mocked(apiGet)).toHaveBeenCalledWith('/download/next-seq')
+    expect(vi.mocked(apiGet)).toHaveBeenCalledWith(expect.stringMatching(/^\/download\/next-seq\?dir=\d{8}$/))
 
     // 無選取時下載 / 清除全部按鈕停用
     expect(wrapper.find('.dl').attributes('disabled')).toBeDefined()
@@ -313,5 +313,141 @@ describe('SelectedVideos', () => {
     const wrapper = mount(SelectedVideos)
     expect(wrapper.find('[data-testid="drive-upload-button"]').exists()).toBe(false)
     expect(wrapper.find('.choose-btn').exists()).toBe(false)
+  })
+})
+
+describe('SelectedVideos resilient resume progress', () => {
+  beforeEach(() => {
+    setActivePinia(createPinia())
+    localStorage.clear()
+  })
+
+  it('keeps the progress list visible after a completed batch with errors', () => {
+    const download = useDownloadStore()
+    download.toggle({ ...FAKE_VIDEO, video_id: 'v2', title: 'Failed video' })
+    download.downloading = false
+    download.progress = {
+      v1: { title: 'Done video', percent: 100, status: 'done' },
+      v2: { title: 'Failed video', percent: 0, status: 'error', error: 'boom' },
+    }
+
+    const wrapper = mount(SelectedVideos)
+
+    expect(wrapper.find('.progress-list').exists()).toBe(true)
+    expect(wrapper.find('.bar.error').exists()).toBe(true)
+    expect(wrapper.text()).toContain('Failed video')
+  })
+
+  it('allows retry when failed videos remain selected after the batch ends', () => {
+    const download = useDownloadStore()
+    download.toggle({ ...FAKE_VIDEO, video_id: 'v2', title: 'Failed video' })
+    download.downloading = false
+    download.progress = {
+      v2: { title: 'Failed video', percent: 0, status: 'error', error: 'boom' },
+    }
+
+    const wrapper = mount(SelectedVideos)
+
+    expect(wrapper.find('.dl').attributes('disabled')).toBeUndefined()
+  })
+
+  it('lists restored selected videos by title so they are visible without re-searching', () => {
+    const download = useDownloadStore()
+    download.toggle({ ...FAKE_VIDEO, video_id: 'v1', title: '影片甲' })
+    download.toggle({ ...FAKE_VIDEO, video_id: 'v2', title: '影片乙' })
+
+    const wrapper = mount(SelectedVideos)
+
+    const items = wrapper.findAll('.selected-list .selected-item')
+    expect(items).toHaveLength(2)
+    expect(wrapper.find('.selected-list').text()).toContain('影片甲')
+    expect(wrapper.find('.selected-list').text()).toContain('影片乙')
+  })
+
+  it('removes a single video from the selection via its ✕ button', async () => {
+    const download = useDownloadStore()
+    download.toggle({ ...FAKE_VIDEO, video_id: 'v1', title: '影片甲' })
+    download.toggle({ ...FAKE_VIDEO, video_id: 'v2', title: '影片乙' })
+
+    const wrapper = mount(SelectedVideos)
+    await wrapper.findAll('.selected-item .remove')[0].trigger('click')
+
+    expect(download.selected.map((v) => v.video_id)).toEqual(['v2'])
+    expect(wrapper.findAll('.selected-list .selected-item')).toHaveLength(1)
+  })
+})
+
+describe('SelectedVideos target folder sequence alignment', () => {
+  beforeEach(() => {
+    setActivePinia(createPinia())
+    localStorage.clear()
+    vi.useFakeTimers()
+  })
+
+  afterEach(() => {
+    vi.useRealTimers()
+  })
+
+  it('requests next-seq with the current target folder basename', async () => {
+    const { apiGet } = await import('@/api')
+    vi.mocked(apiGet).mockImplementation(async (url: string) => {
+      if (url === '/settings') return { output_path: 'D:\\Music' } as any
+      if (url === '/download/next-seq?dir=20260623_sports') return { next_seq: '07', existing: [1, 6] } as any
+      return { next_seq: '01', existing: [] } as any
+    })
+    const download = useDownloadStore()
+    download.lastWorkDirName = '20260601_sports'
+
+    const wrapper = mount(SelectedVideos)
+    await flushPromises()
+
+    expect(vi.mocked(apiGet)).toHaveBeenCalledWith('/download/next-seq?dir=20260623_sports')
+    expect(wrapper.find<HTMLInputElement>('.start-seq-input').element.value).toBe('07')
+  })
+
+  it('debounces target folder changes and refreshes next-seq for the new folder', async () => {
+    const { apiGet } = await import('@/api')
+    vi.mocked(apiGet).mockImplementation(async (url: string) => {
+      if (url === '/settings') return { output_path: 'D:\\Music' } as any
+      if (url === '/download/next-seq?dir=myalbum') return { next_seq: '03', existing: [1, 2] } as any
+      return { next_seq: '10', existing: [9] } as any
+    })
+
+    const wrapper = mount(SelectedVideos)
+    await flushPromises()
+    vi.mocked(apiGet).mockClear()
+
+    await wrapper.find('[data-testid="download-target-dir"]').setValue('D:\\Music\\myalbum')
+    await vi.advanceTimersByTimeAsync(299)
+    expect(vi.mocked(apiGet)).not.toHaveBeenCalledWith('/download/next-seq?dir=myalbum')
+
+    await vi.advanceTimersByTimeAsync(1)
+    await flushPromises()
+
+    expect(vi.mocked(apiGet)).toHaveBeenCalledWith('/download/next-seq?dir=myalbum')
+    expect(wrapper.find<HTMLInputElement>('.start-seq-input').element.value).toBe('03')
+  })
+
+  it('refreshes next-seq for the target folder before starting download', async () => {
+    const { apiGet } = await import('@/api')
+    vi.mocked(apiGet).mockImplementation(async (url: string) => {
+      if (url === '/settings') return { output_path: 'D:\\Music' } as any
+      if (url === '/download/next-seq?dir=myalbum') return { next_seq: '04', existing: [1, 2, 3] } as any
+      return { next_seq: '01', existing: [] } as any
+    })
+    const download = useDownloadStore()
+    download.toggle(FAKE_VIDEO)
+    const spy = vi.spyOn(download, 'startDownload').mockResolvedValue(undefined)
+
+    const wrapper = mount(SelectedVideos)
+    await flushPromises()
+    await wrapper.find('[data-testid="download-target-dir"]').setValue('D:\\Music\\myalbum')
+    await wrapper.find('.dl').trigger('click')
+    await flushPromises()
+
+    expect(spy).toHaveBeenCalledWith('mp3', 192, expect.objectContaining({
+      startSeq: '04',
+      targetDir: 'myalbum',
+    }))
   })
 })

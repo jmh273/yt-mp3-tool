@@ -253,7 +253,9 @@ const loading = ref(true)
 const error = ref('')
 const version = ref('')
 const selectedChannelId = ref<string | null>(null)
-const activeView = ref<'none' | 'channel' | 'latest' | 'trending' | 'search' | 'url' | 'discovery'>('none')
+// 進入 app 一律預設落在「最新影片」頁並自動載入，讓使用者一進來就有內容、
+// 還原的待下載選取（落在最新時間窗內者）勾選狀態也立即可見，而非停在空白佔位頁。
+const activeView = ref<'none' | 'channel' | 'latest' | 'trending' | 'search' | 'url' | 'discovery'>('latest')
 const activeLeftTab = ref<'subscribed' | 'watchlist'>('subscribed')
 const activeRightTab = ref<'download' | 'normalize' | 'upload'>('download')
 useAutoPostDownloadPipeline(activeRightTab)

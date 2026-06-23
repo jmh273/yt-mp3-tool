@@ -46,4 +46,29 @@ describe('SelectedVideos date-prefix rollover', () => {
     const input = wrapper.find<HTMLInputElement>('[data-testid="download-target-dir"]')
     expect(input.element.value).toBe('D:\\Music\\20260602_sports')
   })
+
+  it('does not roll a manually edited target dir before download', async () => {
+    vi.useFakeTimers()
+    vi.setSystemTime(new Date('2026-06-02T12:00:00'))
+    const { apiGet } = await import('@/api')
+    vi.mocked(apiGet).mockImplementation(async (url: string) => {
+      if (url === '/settings') return { output_path: 'D:\\Music' } as any
+      if (url === '/download/next-seq?dir=20260601_sports') return { next_seq: '04', existing: [1, 2, 3] } as any
+      return { next_seq: '01', existing: [] } as any
+    })
+    const download = useDownloadStore()
+    download.toggle(FAKE_VIDEO)
+    const spy = vi.spyOn(download, 'startDownload').mockResolvedValue(undefined)
+
+    const wrapper = mount(SelectedVideos)
+    await flushPromises()
+    await wrapper.find('[data-testid="download-target-dir"]').setValue('D:\\Music\\20260601_sports')
+    await wrapper.find('.dl').trigger('click')
+    await flushPromises()
+
+    expect(spy).toHaveBeenCalledWith('mp3', 192, expect.objectContaining({
+      targetDir: '20260601_sports',
+      startSeq: '04',
+    }))
+  })
 })

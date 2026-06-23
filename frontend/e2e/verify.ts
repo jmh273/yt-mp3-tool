@@ -13,6 +13,8 @@ const known: Record<string, () => Promise<unknown>> = {
   'search-subscribe-graceful-toast': () => import('./verify-search-subscribe-graceful-toast'),
   'subscription-reconciliation': () => import('./verify-subscription-reconciliation'),
   'download-panel-prefill-fields': () => import('./verify-download-panel-prefill-fields'),
+  'fix-seq-target-dir-mismatch': () => import('./verify-fix-seq-target-dir-mismatch'),
+  'resilient-download-resume': () => import('./verify-resilient-download-resume'),
   'strip-highlight-prefix-dedup': () => import('./verify-strip-highlight-prefix-dedup'),
   'downloaded-on-disk-rootwide': () => import('./verify-downloaded-on-disk-rootwide'),
 }

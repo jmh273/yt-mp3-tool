@@ -1,5 +1,6 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { setActivePinia, createPinia } from 'pinia'
+import { nextTick } from 'vue'
 import { useAuthStore } from '@/stores/auth'
 import { useDownloadStore } from '@/stores/download'
 import { useDriveUploadStore } from '@/stores/driveUpload'
@@ -78,6 +79,64 @@ describe('authStore', () => {
     const auth = useAuthStore()
     await auth.login()
     expect(apiGet).toHaveBeenCalledWith('/auth/login')
+  })
+})
+
+describe('downloadStore resilient resume persistence', () => {
+  beforeEach(() => {
+    setActivePinia(createPinia())
+    localStorage.clear()
+  })
+
+  it('hydrates selected videos from localStorage', () => {
+    localStorage.setItem('yt_mp3_selected', JSON.stringify([FAKE_VIDEO]))
+    setActivePinia(createPinia())
+
+    const store = useDownloadStore()
+
+    expect(store.selected).toEqual([FAKE_VIDEO])
+  })
+
+  it('ignores invalid selected localStorage JSON', () => {
+    localStorage.setItem('yt_mp3_selected', '{not json')
+    setActivePinia(createPinia())
+
+    const store = useDownloadStore()
+
+    expect(store.selected).toEqual([])
+  })
+
+  it('persists selected videos and removes only completed downloads', async () => {
+    const store = useDownloadStore()
+    const failedVideo = { ...FAKE_VIDEO, video_id: 'v2', title: 'Failed video' }
+
+    store.toggle(FAKE_VIDEO)
+    store.toggle(failedVideo)
+    await nextTick()
+    expect(JSON.parse(localStorage.getItem('yt_mp3_selected') || '[]')).toHaveLength(2)
+
+    store.markAsDownloaded('v1')
+    await nextTick()
+
+    expect(store.selected.map((v) => v.video_id)).toEqual(['v2'])
+    expect(JSON.parse(localStorage.getItem('yt_mp3_selected') || '[]')).toEqual([failedVideo])
+  })
+
+  it('clearAll clears selected videos, persisted selection, and progress', async () => {
+    const store = useDownloadStore()
+    store.toggle(FAKE_VIDEO)
+    store.progress = {
+      v1: { title: 'Done video', percent: 100, status: 'done' },
+      v2: { title: 'Failed video', percent: 0, status: 'error', error: 'boom' },
+    }
+    await nextTick()
+
+    store.clearAll()
+    await nextTick()
+
+    expect(store.selected).toEqual([])
+    expect(store.progress).toEqual({})
+    expect(localStorage.getItem('yt_mp3_selected')).toBe('[]')
   })
 })
 
@@ -193,6 +252,7 @@ function makeEventSourceMock() {
 describe('downloadStore', () => {
   beforeEach(() => {
     setActivePinia(createPinia())
+    localStorage.clear()
   })
 
   it('初始狀態：selected 為空、downloading 為 false', () => {

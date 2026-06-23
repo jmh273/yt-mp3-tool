@@ -494,6 +494,33 @@ async def test_next_seq_widens_past_99(client, tmp_path):
     assert r.json() == {"next_seq": "121", "existing": [120]}
 
 
+async def test_next_seq_with_target_dir_scans_that_folder(client, tmp_path):
+    today = tmp_path / "20260623"
+    custom = tmp_path / "myalbum"
+    today.mkdir()
+    custom.mkdir()
+    (today / "99_today.mp3").write_bytes(b"x")
+    (custom / "01_a.mp3").write_bytes(b"x")
+    (custom / "02_b.mp4").write_bytes(b"x")
+
+    with patch("main.require_credentials"), \
+         patch("main.load_settings", return_value={"output_path": str(tmp_path)}):
+        async with client as c:
+            r = await c.get("/download/next-seq?dir=myalbum")
+
+    assert r.status_code == 200
+    assert r.json() == {"next_seq": "03", "existing": [1, 2]}
+
+
+async def test_next_seq_rejects_target_dir_path_traversal(client, tmp_path):
+    with patch("main.require_credentials"), \
+         patch("main.load_settings", return_value={"output_path": str(tmp_path)}):
+        async with client as c:
+            r = await c.get("/download/next-seq?dir=..\\secret")
+
+    assert r.status_code == 400
+
+
 # ── concurrent downloads ──────────────────────────────────────────────────────
 def _capture_prefix_by_title(videos, tmp_path, **kwargs):
     """Run run_download with a fake yt-dlp; return {title: seq_prefix} by parsing

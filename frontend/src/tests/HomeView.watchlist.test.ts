@@ -15,6 +15,7 @@ import HomeView from '@/views/HomeView.vue'
 import { apiGet, apiDelete } from '@/api'
 import ReconcileWizard from '@/components/ReconcileWizard.vue'
 import SearchVideosFeed from '@/components/SearchVideosFeed.vue'
+import LatestVideosFeed from '@/components/LatestVideosFeed.vue'
 
 type Ch = { subscription_id: string; channel_id: string; title: string; thumbnail: string }
 
@@ -118,5 +119,26 @@ describe('HomeView 加入觀察名單', () => {
     await flushPromises()
 
     expect(wrapper.findComponent(ReconcileWizard).exists()).toBe(true)
+  })
+})
+
+describe('HomeView 進入即落在最新影片頁', () => {
+  it('一進入 app 即顯示最新影片頁而非空白佔位（無還原選取時）', async () => {
+    const wrapper = await mountLoggedIn()
+
+    expect(wrapper.findComponent(LatestVideosFeed).exists()).toBe(true)
+    expect(wrapper.text()).not.toContain('請從左側選擇頻道')
+  })
+
+  it('有還原的待下載選取時，同樣落在最新影片頁，勾選狀態得以呈現', async () => {
+    localStorage.setItem(
+      'yt_mp3_selected',
+      JSON.stringify([{ video_id: 'v1', title: '影片甲', url: '', thumbnail: '', published: '' }]),
+    )
+
+    const wrapper = await mountLoggedIn()
+
+    expect(wrapper.findComponent(LatestVideosFeed).exists()).toBe(true)
+    expect(wrapper.text()).not.toContain('請從左側選擇頻道')
   })
 })

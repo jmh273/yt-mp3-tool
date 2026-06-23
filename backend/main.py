@@ -10,7 +10,7 @@ from typing import AsyncGenerator
 
 import aiohttp
 import yt_dlp
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
 from fastapi.staticfiles import StaticFiles
@@ -2484,10 +2484,14 @@ async def start_download(body: DownloadRequest):
 
 
 @app.get("/download/next-seq")
-async def download_next_seq():
+async def download_next_seq(target_dir: str | None = Query(default=None, alias="dir")):
     require_credentials()
-    today_dir = _today_download_dir()
-    existing = _scan_existing_seqs(today_dir)
+    if target_dir is not None and target_dir.strip():
+        settings = load_settings()
+        scan_dir = _resolve_output_child(settings["output_path"], target_dir)
+    else:
+        scan_dir = _today_download_dir()
+    existing = _scan_existing_seqs(scan_dir)
     next_n = (existing[-1] + 1) if existing else 1
     return {"next_seq": _format_seq(next_n), "existing": existing}
 
