@@ -852,7 +852,12 @@ async def fetch_channel_videos_api(creds, channel_id: str, limit: int, channel_t
             async with session.get(url, params=params, headers=headers) as resp:
                 if resp.status != 200:
                     err_text = await resp.text()
-                    print(f"[YouTube API Error] fetch_channel_videos_api for {channel_id}: {resp.status} {err_text}")
+                    if resp.status == 404 and "playlistNotFound" in err_text:
+                        # 預期錯誤（頻道無可用上傳清單）：降噪成一行，不印整段 JSON
+                        label = channel_title or channel_id
+                        print(f"[跳過] {label} ({channel_id}) 無可用上傳清單")
+                    else:
+                        print(f"[YouTube API Error] fetch_channel_videos_api for {channel_id}: {resp.status} {err_text}")
                     return channel_id, []
                 data = await resp.json()
                 
@@ -888,6 +893,141 @@ async def fetch_channel_videos_api(creds, channel_id: str, limit: int, channel_t
     except Exception as e:
         print(f"[YouTube API Error] fetch_channel_videos_api for {channel_id}: {e}")
         return channel_id, []
+
+
+async def _probe_channel_status(creds, channel_id: str) -> str:
+    """探測頻道上傳清單，回傳狀態（不吞錯）：
+    ok / empty / playlist_not_found / forbidden / error。
+    僅供健檢使用；不改動 fetch_channel_videos_api 的對外行為。"""
+    if channel_id.startswith("UC"):
+        uploads_id = "UU" + channel_id[2:]
+    else:
+        try:
+            youtube = await asyncio.to_thread(build, "youtube", "v3", credentials=creds)
+            uploads_id = await asyncio.to_thread(_get_channel_uploads_playlist_id, youtube, channel_id)
+        except Exception:
+            uploads_id = None
+        if not uploads_id:
+            return "playlist_not_found"
+
+    url = "https://www.googleapis.com/youtube/v3/playlistItems"
+    params = {"part": "snippet", "playlistId": uploads_id, "maxResults": "1"}
+    headers = {"Authorization": f"Bearer {creds.token}"}
+    try:
+        async with aiohttp.ClientSession() as session:
+            async with session.get(url, params=params, headers=headers) as resp:
+                status_code = resp.status
+                if status_code == 200:
+                    data = await resp.json()
+                    await asyncio.to_thread(consume_quota, 1)
+                    return "ok" if data.get("items") else "empty"
+                err_text = await resp.text()
+                await asyncio.to_thread(consume_quota, 1)
+                if status_code == 404:
+                    return "playlist_not_found"
+                if status_code == 403:
+                    return "forbidden"
+                return "error"
+    except Exception:
+        return "error"
+
+
+async def _fetch_existing_channel_ids(creds, channel_ids: list[str]) -> set[str]:
+    """對一批 channel_id 呼叫 channels.list（一次最多 50 個），回傳仍存在的 id 集合。
+    用來區分「已刪除/終止」與「頻道還在但無上傳」。"""
+    existing: set[str] = set()
+    if not channel_ids:
+        return existing
+    youtube = await asyncio.to_thread(build, "youtube", "v3", credentials=creds)
+    for i in range(0, len(channel_ids), 50):
+        batch = channel_ids[i:i + 50]
+
+        def _call():
+            return youtube.channels().list(part="id", id=",".join(batch)).execute()
+
+        try:
+            resp = await asyncio.to_thread(_call)
+            await asyncio.to_thread(consume_quota, 1)
+            for item in resp.get("items", []):
+                if item.get("id"):
+                    existing.add(item["id"])
+        except Exception as e:
+            print(f"[YouTube API Error] _fetch_existing_channel_ids: {e}")
+    return existing
+
+
+def _classify_problem(status: str, exists: bool) -> str:
+    """由探測狀態 + 頻道是否存在，映射成回傳給前端的 reason。"""
+    if status == "forbidden":
+        return "forbidden"
+    if status in ("playlist_not_found", "empty"):
+        return "no_uploads" if exists else "deleted"
+    if status == "error":
+        return "unknown" if exists else "deleted"
+    return "unknown"
+
+
+@app.get("/subscriptions/health-check")
+async def subscriptions_health_check():
+    """盤點所有訂閱頻道，回傳抓不到影片的頻道清單並標示原因。"""
+    creds = require_credentials()
+    youtube = build("youtube", "v3", credentials=creds)
+
+    subs: list[dict] = []
+    page_token = None
+    while True:
+        resp = (
+            youtube.subscriptions()
+            .list(part="snippet", mine=True, maxResults=50, pageToken=page_token, order="alphabetical")
+            .execute()
+        )
+        consume_quota(1)
+        for item in resp.get("items", []):
+            sn = item["snippet"]
+            subs.append({
+                "subscription_id": item["id"],
+                "channel_id": sn["resourceId"]["channelId"],
+                "title": sn.get("title", ""),
+                "thumbnail": sn.get("thumbnails", {}).get("default", {}).get("url", ""),
+            })
+        page_token = resp.get("nextPageToken")
+        if not page_token:
+            break
+
+    sem = asyncio.Semaphore(20)
+
+    async def _probe(sub):
+        async with sem:
+            status = await _probe_channel_status(creds, sub["channel_id"])
+            return sub, status
+
+    results = await asyncio.gather(*[_probe(s) for s in subs], return_exceptions=True)
+
+    checked = 0
+    failed: list[tuple[dict, str]] = []
+    for res in results:
+        if isinstance(res, Exception):
+            continue
+        sub, status = res
+        checked += 1
+        if status != "ok":
+            failed.append((sub, status))
+
+    failed_ids = [sub["channel_id"] for sub, _ in failed]
+    existing = await _fetch_existing_channel_ids(creds, failed_ids)
+
+    problems = []
+    for sub, status in failed:
+        problems.append({
+            "channel_id": sub["channel_id"],
+            "subscription_id": sub["subscription_id"],
+            "title": sub["title"],
+            "thumbnail": sub["thumbnail"],
+            "reason": _classify_problem(status, sub["channel_id"] in existing),
+            "detail": status,
+        })
+
+    return {"checked": checked, "problems": problems}
 
 
 @app.get("/subscriptions/{channel_id}/videos")

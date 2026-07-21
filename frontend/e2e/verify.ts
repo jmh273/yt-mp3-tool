@@ -17,6 +17,7 @@ const known: Record<string, () => Promise<unknown>> = {
   'resilient-download-resume': () => import('./verify-resilient-download-resume'),
   'strip-highlight-prefix-dedup': () => import('./verify-strip-highlight-prefix-dedup'),
   'downloaded-on-disk-rootwide': () => import('./verify-downloaded-on-disk-rootwide'),
+  'channel-health': () => import('./verify-channel-health'),
 }
 
 const run = known[change]

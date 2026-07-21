@@ -5,7 +5,26 @@
       <h1>設定</h1>
     </header>
 
-    <div class="form">
+    <div class="tab-bar">
+      <button
+        class="tab"
+        :class="{ active: activeTab === 'settings' }"
+        data-testid="tab-settings"
+        @click="activeTab = 'settings'"
+      >
+        設定
+      </button>
+      <button
+        class="tab"
+        :class="{ active: activeTab === 'health' }"
+        data-testid="tab-health"
+        @click="activeTab = 'health'"
+      >
+        訂閱頻道健檢
+      </button>
+    </div>
+
+    <div v-if="activeTab === 'settings'" class="form">
       <label>
         MP3 輸出資料夾
         <input v-model="outputPath" type="text" placeholder="例：C:\Users\你的名字\Music\YT-MP3" />
@@ -66,18 +85,120 @@
         <input data-testid="drive-upload-concurrency" v-model.number="driveUploadConcurrency" type="number" min="1" max="8" />
         <small class="hint">Drive 上傳同時處理數量；建議 3，網路或 API 較不穩時可調低。</small>
       </label>
-      <button @click="save" :disabled="saving || !!latestHoursError || !!normalizeTargetDbError">
+      <button data-testid="save-settings" @click="save" :disabled="saving || !!latestHoursError || !!normalizeTargetDbError">
         {{ saving ? '儲存中...' : '儲存' }}
       </button>
       <p v-if="saved" class="ok">已儲存！</p>
       <p v-if="error" class="error">{{ error }}</p>
     </div>
+
+    <section v-if="activeTab === 'health'" class="health-check">
+      <p class="hint">
+        檢查所有訂閱頻道是否還能抓到影片，列出「無上傳／已刪除／權限」等問題頻道供你直接退訂。
+        每個頻道約消耗 1 單位配額（與「最新影片」相近），訂閱較多時請斟酌使用。
+      </p>
+      <button class="check-btn" data-testid="run-health-check" @click="runHealthCheck" :disabled="checking">
+        {{ checking ? '檢查中…' : '檢查訂閱頻道' }}
+      </button>
+      <p v-if="healthError" class="error">{{ healthError }}</p>
+
+      <template v-if="hasChecked && !checking">
+        <p v-if="problems.length === 0" class="ok" data-testid="health-ok">
+          ✓ 已檢查 {{ checked }} 個頻道，全部正常。
+        </p>
+        <template v-else>
+          <p class="health-summary">
+            已檢查 {{ checked }} 個頻道，發現 {{ problems.length }} 個無法播放的頻道：
+          </p>
+          <ul class="problem-list">
+            <li v-for="p in problems" :key="p.subscription_id" class="problem-row" data-testid="problem-row">
+              <img v-if="p.thumbnail" :src="p.thumbnail" alt="" class="thumb" />
+              <div v-else class="thumb thumb-placeholder"></div>
+              <div class="problem-info">
+                <span class="problem-title">{{ p.title || p.channel_id }}</span>
+                <span class="reason-badge" :class="'reason-' + p.reason">{{ reasonLabel(p.reason) }}</span>
+              </div>
+              <button
+                class="unsub-btn"
+                data-testid="unsub-btn"
+                @click="unsubscribe(p)"
+                :disabled="p.removing"
+              >
+                {{ p.removing ? '退訂中…' : '退訂' }}
+              </button>
+            </li>
+          </ul>
+        </template>
+      </template>
+    </section>
   </div>
 </template>
 
 <script setup lang="ts">
 import { ref, onMounted } from 'vue'
-import { apiGet, apiPut } from '@/api'
+import { apiGet, apiPut, apiDelete } from '@/api'
+import { useToastStore } from '@/stores/toast'
+
+const toast = useToastStore()
+
+const activeTab = ref<'settings' | 'health'>('settings')
+
+interface ProblemChannel {
+  channel_id: string
+  subscription_id: string
+  title: string
+  thumbnail: string
+  reason: string
+  detail: string
+  removing?: boolean
+}
+
+const checking = ref(false)
+const hasChecked = ref(false)
+const checked = ref(0)
+const problems = ref<ProblemChannel[]>([])
+const healthError = ref('')
+
+const REASON_LABELS: Record<string, string> = {
+  no_uploads: '無上傳影片',
+  deleted: '已刪除或終止',
+  forbidden: '無法存取（權限）',
+  unknown: '未知錯誤',
+}
+
+function reasonLabel(reason: string): string {
+  return REASON_LABELS[reason] ?? reason
+}
+
+async function runHealthCheck() {
+  checking.value = true
+  healthError.value = ''
+  try {
+    const data = await apiGet<{ checked: number; problems: ProblemChannel[] }>(
+      '/subscriptions/health-check',
+    )
+    checked.value = data.checked
+    problems.value = data.problems.map((p) => ({ ...p, removing: false }))
+    hasChecked.value = true
+  } catch (e: any) {
+    healthError.value = e.message
+  } finally {
+    checking.value = false
+  }
+}
+
+async function unsubscribe(p: ProblemChannel) {
+  if (!window.confirm(`確定要退訂「${p.title || p.channel_id}」嗎？`)) return
+  p.removing = true
+  try {
+    await apiDelete(`/subscriptions/${p.subscription_id}`)
+    problems.value = problems.value.filter((x) => x.subscription_id !== p.subscription_id)
+    toast.success(`已退訂「${p.title || p.channel_id}」`)
+  } catch (e: any) {
+    p.removing = false
+    toast.error(`退訂失敗：${e.message}`)
+  }
+}
 
 const outputPath = ref('')
 const videosPerChannel = ref(5)
@@ -181,4 +302,38 @@ button:disabled { opacity: 0.6; cursor: not-allowed; }
 .error { color: red; }
 .field-error { color: red; font-size: 0.82rem; font-weight: normal; }
 .hint { color: #888; font-size: 0.75rem; font-weight: normal; }
+
+.tab-bar { display: flex; border-bottom: 1px solid #ddd; margin-bottom: 1.5rem; }
+.tab {
+  flex: 1;
+  padding: 0.6rem 0.4rem;
+  border: none;
+  background: transparent;
+  cursor: pointer;
+  font-size: 0.95rem;
+  color: #555;
+  border-bottom: 2px solid transparent;
+  align-self: stretch;
+  border-radius: 0;
+}
+.tab:hover { background: #f5f5f5; }
+.tab.active { color: #c00; border-bottom-color: #c00; font-weight: 600; }
+
+.health-check { margin-top: 0; }
+.check-btn { padding: 0.6rem 1.5rem; background: #ff0000; color: white; border: none; border-radius: 4px; cursor: pointer; }
+.check-btn:disabled { opacity: 0.6; cursor: not-allowed; }
+.health-summary { margin: 1rem 0 0.5rem; font-weight: 500; }
+.problem-list { list-style: none; padding: 0; margin: 0.5rem 0 0; display: flex; flex-direction: column; gap: 0.5rem; }
+.problem-row { display: flex; align-items: center; gap: 0.75rem; padding: 0.5rem; border: 1px solid #eee; border-radius: 6px; }
+.thumb { width: 44px; height: 44px; border-radius: 50%; object-fit: cover; flex-shrink: 0; }
+.thumb-placeholder { background: #ddd; }
+.problem-info { display: flex; flex-direction: column; gap: 0.25rem; flex: 1; min-width: 0; }
+.problem-title { font-weight: 500; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.reason-badge { align-self: flex-start; font-size: 0.72rem; padding: 0.1rem 0.5rem; border-radius: 999px; color: #fff; }
+.reason-no_uploads { background: #b8860b; }
+.reason-deleted { background: #c0392b; }
+.reason-forbidden { background: #8e44ad; }
+.reason-unknown { background: #7f8c8d; }
+.unsub-btn { padding: 0.4rem 1rem; background: #555; color: #fff; border: none; border-radius: 4px; cursor: pointer; flex-shrink: 0; }
+.unsub-btn:disabled { opacity: 0.6; cursor: not-allowed; }
 </style>
