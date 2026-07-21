@@ -382,6 +382,9 @@ describe('SelectedVideos target folder sequence alignment', () => {
     setActivePinia(createPinia())
     localStorage.clear()
     vi.useFakeTimers()
+    // 固定「今天」，否則 rolloverDatePrefix 會把資料夾日期改成真實今日，
+    // 讓寫死日期的斷言隨時間漂移。用本地時間建構避免時區差一天。
+    vi.setSystemTime(new Date(2026, 5, 23)) // 2026-06-23（月份 0-indexed）
   })
 
   afterEach(() => {
