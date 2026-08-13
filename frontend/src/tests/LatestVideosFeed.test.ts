@@ -137,7 +137,7 @@ describe('LatestVideosFeed', () => {
     expect(wrapper.find('.dl-badge').exists()).toBe(true)
   })
 
-  it('打開「允許再次下載」後，已下載 checkbox 變為可勾選，徽章仍顯示', async () => {
+  it('打開全域「允許再次下載」後，已下載 checkbox 變為可勾選，徽章仍顯示', async () => {
     const { apiGet } = await import('@/api')
     const video = { ...makeVideo('v1', 1), downloaded_on_disk: true }
     vi.mocked(apiGet)
@@ -147,15 +147,18 @@ describe('LatestVideosFeed', () => {
     const wrapper = mount(LatestVideosFeed)
     await flushPromises()
 
-    const toggle = wrapper.find('.redownload-toggle input[type="checkbox"]')
-    await toggle.setValue(true)
+    const download = useDownloadStore()
+    download.allowRedownload = true
+    await flushPromises()
 
     const checkbox = wrapper.find('.video-checkbox').element as HTMLInputElement
     expect(checkbox.disabled).toBe(false)
+    // 開關 ON 且未選取時，checkbox 必須呈現「未勾選」，否則點擊沒有視覺回饋
+    expect(checkbox.checked).toBe(false)
     expect(wrapper.find('.dl-badge').exists()).toBe(true)
   })
 
-  it('關閉「允許再次下載」時，已下載的影片會從 download.selected 移除', async () => {
+  it('開關 ON 時點擊已下載影片，加入 selected 並轉為已勾選', async () => {
     const { apiGet } = await import('@/api')
     const video = { ...makeVideo('v1', 1), downloaded_on_disk: true }
     vi.mocked(apiGet)
@@ -165,17 +168,52 @@ describe('LatestVideosFeed', () => {
     const wrapper = mount(LatestVideosFeed)
     await flushPromises()
 
-    const toggle = wrapper.find('.redownload-toggle input[type="checkbox"]')
-    await toggle.setValue(true)
+    const download = useDownloadStore()
+    download.allowRedownload = true
+    await flushPromises()
+
     await wrapper.find('.video-checkbox').trigger('change')
+    expect(download.selected).toHaveLength(1)
+    expect((wrapper.find('.video-checkbox').element as HTMLInputElement).checked).toBe(true)
+  })
+
+  it('關閉全域「允許再次下載」時，已下載的影片仍保留在 download.selected', async () => {
+    const { apiGet } = await import('@/api')
+    const video = { ...makeVideo('v1', 1), downloaded_on_disk: true }
+    vi.mocked(apiGet)
+      .mockResolvedValueOnce({ latest_hours: 24 })
+      .mockResolvedValueOnce({ videos: [video] })
+
+    const wrapper = mount(LatestVideosFeed)
+    await flushPromises()
 
     const download = useDownloadStore()
+    download.allowRedownload = true
+    await flushPromises()
+    await wrapper.find('.video-checkbox').trigger('change')
     expect(download.selected).toHaveLength(1)
 
-    await toggle.setValue(false)
-    expect(download.selected).toHaveLength(0)
+    download.allowRedownload = false
+    await flushPromises()
+
+    // 收回權限不回溯銷毀選取：項目保留，只恢復停用呈現
+    expect(download.selected).toHaveLength(1)
+    expect(download.selected[0].video_id).toBe('v1')
     const checkbox = wrapper.find('.video-checkbox').element as HTMLInputElement
     expect(checkbox.disabled).toBe(true)
+    expect(checkbox.checked).toBe(true)
+  })
+
+  it('元件本身不再提供覆寫開關（已移至 HomeView header）', async () => {
+    const { apiGet } = await import('@/api')
+    vi.mocked(apiGet)
+      .mockResolvedValueOnce({ latest_hours: 24 })
+      .mockResolvedValueOnce({ videos: [makeVideo('v1', 1)] })
+
+    const wrapper = mount(LatestVideosFeed)
+    await flushPromises()
+
+    expect(wrapper.find('.redownload-toggle').exists()).toBe(false)
   })
 
   it('最近 1 小時內的影片顯示「X 分鐘前」', async () => {
@@ -217,9 +255,9 @@ describe('LatestVideosFeed', () => {
     expect(wrapper.find('.date').text()).toContain('天前')
   })
 
-  it('結果超過一頁時只渲染 50 部並顯示「載入更多」', async () => {
+  it('結果超過一頁時只渲染 200 部並顯示「載入更多」', async () => {
     const { apiGet } = await import('@/api')
-    const videos = Array.from({ length: 120 }, (_, i) => makeVideo(`v${i}`, i * 0.01))
+    const videos = Array.from({ length: 480 }, (_, i) => makeVideo(`v${i}`, i * 0.01))
     vi.mocked(apiGet)
       .mockResolvedValueOnce({ latest_hours: 24 })
       .mockResolvedValueOnce({ videos })
@@ -227,15 +265,29 @@ describe('LatestVideosFeed', () => {
     const wrapper = mount(LatestVideosFeed)
     await flushPromises()
 
-    expect(wrapper.findAll('.video-item')).toHaveLength(50)
+    expect(wrapper.findAll('.video-item')).toHaveLength(200)
     expect(wrapper.find('.load-more-btn').exists()).toBe(true)
-    expect(wrapper.find('.count-badge').text()).toContain('120 部')
-    expect(wrapper.find('.count-badge').text()).toContain('50 / 120')
+    expect(wrapper.find('.count-badge').text()).toContain('480 部')
+    expect(wrapper.find('.count-badge').text()).toContain('200 / 480')
+  })
+
+  it('結果在一頁內時全部渲染且不顯示「載入更多」', async () => {
+    const { apiGet } = await import('@/api')
+    const videos = Array.from({ length: 180 }, (_, i) => makeVideo(`v${i}`, i * 0.01))
+    vi.mocked(apiGet)
+      .mockResolvedValueOnce({ latest_hours: 24 })
+      .mockResolvedValueOnce({ videos })
+
+    const wrapper = mount(LatestVideosFeed)
+    await flushPromises()
+
+    expect(wrapper.findAll('.video-item')).toHaveLength(180)
+    expect(wrapper.find('.load-more-btn').exists()).toBe(false)
   })
 
   it('點「載入更多」逐頁追加，全部顯示後按鈕消失', async () => {
     const { apiGet } = await import('@/api')
-    const videos = Array.from({ length: 120 }, (_, i) => makeVideo(`v${i}`, i * 0.01))
+    const videos = Array.from({ length: 480 }, (_, i) => makeVideo(`v${i}`, i * 0.01))
     vi.mocked(apiGet)
       .mockResolvedValueOnce({ latest_hours: 24 })
       .mockResolvedValueOnce({ videos })
@@ -244,17 +296,17 @@ describe('LatestVideosFeed', () => {
     await flushPromises()
 
     await wrapper.find('.load-more-btn').trigger('click')
-    expect(wrapper.findAll('.video-item')).toHaveLength(100)
+    expect(wrapper.findAll('.video-item')).toHaveLength(400)
     expect(wrapper.find('.load-more-btn').exists()).toBe(true)
 
     await wrapper.find('.load-more-btn').trigger('click')
-    expect(wrapper.findAll('.video-item')).toHaveLength(120)
+    expect(wrapper.findAll('.video-item')).toHaveLength(480)
     expect(wrapper.find('.load-more-btn').exists()).toBe(false)
   })
 
   it('重新套用篩選後，顯示清單重置回第一頁', async () => {
     const { apiGet } = await import('@/api')
-    const videos = Array.from({ length: 120 }, (_, i) => makeVideo(`v${i}`, i * 0.01))
+    const videos = Array.from({ length: 480 }, (_, i) => makeVideo(`v${i}`, i * 0.01))
     // 尾端用 mockResolvedValue 兜底，因為 fetchVideos 的 finally 會呼叫 quota.refresh()（共用 apiGet）
     vi.mocked(apiGet)
       .mockResolvedValueOnce({ latest_hours: 24 })
@@ -264,11 +316,11 @@ describe('LatestVideosFeed', () => {
     await flushPromises()
 
     await wrapper.find('.load-more-btn').trigger('click')
-    expect(wrapper.findAll('.video-item')).toHaveLength(100)
+    expect(wrapper.findAll('.video-item')).toHaveLength(400)
 
     await wrapper.find('.apply-btn').trigger('click')
     await flushPromises()
 
-    expect(wrapper.findAll('.video-item')).toHaveLength(50)
+    expect(wrapper.findAll('.video-item')).toHaveLength(200)
   })
 })

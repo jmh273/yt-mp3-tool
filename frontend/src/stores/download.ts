@@ -49,6 +49,10 @@ export const useDownloadStore = defineStore('download', () => {
   const targetDirPath = ref('')
 
   const downloadedIds = ref<Set<string>>(new Set())
+  // 全域「允許再次下載」覆寫開關：所有影片清單頁共用。
+  // 刻意不持久化——危險模式不該跨 session 存活，重新整理即回到 OFF。
+  // 亦刻意不註冊 watch：關閉開關只恢復 checkbox 停用呈現，不更動 selected。
+  const allowRedownload = ref(false)
   const storedIds = localStorage.getItem('yt_mp3_downloaded_ids')
   if (storedIds) {
     try {
@@ -168,5 +172,6 @@ export const useDownloadStore = defineStore('download', () => {
     startDownload,
     isDownloaded,
     markAsDownloaded,
+    allowRedownload,
   }
 })

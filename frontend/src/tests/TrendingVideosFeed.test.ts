@@ -337,3 +337,68 @@ describe('TrendingVideosFeed', () => {
     expect(btn.attributes('disabled')).toBeUndefined()
   })
 })
+
+// ── 全域「允許再次下載」覆寫開關 ────────────────────────────────────────────────
+describe('TrendingVideosFeed 全域「允許再次下載」', () => {
+  beforeEach(() => {
+    vi.clearAllMocks()
+    setActivePinia(createPinia())
+    localStorage.clear()
+  })
+
+  async function mountWithDownloaded() {
+    const { apiGet } = await import('@/api')
+    vi.mocked(apiGet).mockImplementation(mockTrendingApi())
+    const download = useDownloadStore()
+    download.markAsDownloaded('all1')
+
+    const wrapper = mount(TrendingVideosFeed)
+    await flushPromises()
+    return { wrapper, download }
+  }
+
+  it('開關 OFF：已下載影片 disabled 且呈現已勾選', async () => {
+    const { wrapper } = await mountWithDownloaded()
+
+    const cb = wrapper.findAll('.video-checkbox')[0].element as HTMLInputElement
+    expect(cb.disabled).toBe(true)
+    expect(cb.checked).toBe(true)
+    expect(wrapper.find('.dl-badge').exists()).toBe(true)
+  })
+
+  it('開關 ON：已下載影片可操作且呈現未勾選，徽章仍在', async () => {
+    const { wrapper, download } = await mountWithDownloaded()
+    download.allowRedownload = true
+    await flushPromises()
+
+    const cb = wrapper.findAll('.video-checkbox')[0].element as HTMLInputElement
+    expect(cb.disabled).toBe(false)
+    expect(cb.checked).toBe(false)
+    expect(wrapper.find('.dl-badge').exists()).toBe(true)
+  })
+
+  it('開關 ON：點擊已下載影片加入 selected 並轉為已勾選', async () => {
+    const { wrapper, download } = await mountWithDownloaded()
+    download.allowRedownload = true
+    await flushPromises()
+
+    await wrapper.findAll('.video-checkbox')[0].trigger('change')
+
+    expect(download.selected.map((v) => v.video_id)).toEqual(['all1'])
+    expect((wrapper.findAll('.video-checkbox')[0].element as HTMLInputElement).checked).toBe(true)
+  })
+
+  it('關閉開關後 selected 內容不變', async () => {
+    const { wrapper, download } = await mountWithDownloaded()
+    download.allowRedownload = true
+    await flushPromises()
+    await wrapper.findAll('.video-checkbox')[0].trigger('change')
+    expect(download.selected).toHaveLength(1)
+
+    download.allowRedownload = false
+    await flushPromises()
+
+    expect(download.selected).toHaveLength(1)
+    expect((wrapper.findAll('.video-checkbox')[0].element as HTMLInputElement).disabled).toBe(true)
+  })
+})

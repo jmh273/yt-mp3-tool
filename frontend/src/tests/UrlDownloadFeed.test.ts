@@ -149,3 +149,90 @@ describe('UrlDownloadFeed', () => {
     expect(wrapper.text()).toContain('無法解析網址')
   })
 })
+
+// ── 全域「允許再次下載」覆寫開關 ────────────────────────────────────────────────
+describe('UrlDownloadFeed 全域「允許再次下載」', () => {
+  beforeEach(() => {
+    vi.clearAllMocks()
+    setActivePinia(createPinia())
+    localStorage.clear()
+  })
+
+  async function mountWithDownloaded() {
+    const { apiGet } = await import('@/api')
+    vi.mocked(apiGet).mockResolvedValueOnce({
+      videos: [makeVideo('u1'), makeVideo('u2'), makeVideo('u3')],
+    })
+    const download = useDownloadStore()
+    download.markAsDownloaded('u1')
+
+    const wrapper = mount(UrlDownloadFeed)
+    await wrapper.find('input').setValue('https://youtube.com/playlist?list=XXX')
+    await wrapper.find('.search-btn').trigger('click')
+    await flushPromises()
+    return { wrapper, download }
+  }
+
+  it('開關 OFF：已下載影片 disabled 且呈現已勾選', async () => {
+    const { wrapper } = await mountWithDownloaded()
+
+    const cb = wrapper.findAll('.video-checkbox')[0].element as HTMLInputElement
+    expect(cb.disabled).toBe(true)
+    expect(cb.checked).toBe(true)
+    expect(wrapper.find('.dl-badge').exists()).toBe(true)
+  })
+
+  it('開關 ON：已下載影片可操作且呈現未勾選', async () => {
+    const { wrapper, download } = await mountWithDownloaded()
+    download.allowRedownload = true
+    await flushPromises()
+
+    const cb = wrapper.findAll('.video-checkbox')[0].element as HTMLInputElement
+    expect(cb.disabled).toBe(false)
+    expect(cb.checked).toBe(false)
+    expect(wrapper.find('.dl-badge').exists()).toBe(true)
+  })
+
+  it('開關 OFF：「全選本頁」跳過已下載影片', async () => {
+    const { wrapper, download } = await mountWithDownloaded()
+
+    await wrapper.findAll('.action-btn')[0].trigger('click')
+
+    expect(download.selected.map((v) => v.video_id)).toEqual(['u2', 'u3'])
+  })
+
+  it('開關 ON：「全選本頁」納入已下載影片', async () => {
+    const { wrapper, download } = await mountWithDownloaded()
+    download.allowRedownload = true
+    await flushPromises()
+
+    await wrapper.findAll('.action-btn')[0].trigger('click')
+
+    expect(download.selected.map((v) => v.video_id)).toEqual(['u1', 'u2', 'u3'])
+  })
+
+  it('「取消本頁」可移除開關 ON 時加入的已下載影片', async () => {
+    const { wrapper, download } = await mountWithDownloaded()
+    download.allowRedownload = true
+    await flushPromises()
+    await wrapper.findAll('.action-btn')[0].trigger('click')
+    expect(download.selected).toHaveLength(3)
+
+    await wrapper.findAll('.action-btn')[1].trigger('click')
+
+    expect(download.selected).toHaveLength(0)
+  })
+
+  it('關閉開關後 selected 保留已下載影片', async () => {
+    const { wrapper, download } = await mountWithDownloaded()
+    download.allowRedownload = true
+    await flushPromises()
+    await wrapper.findAll('.action-btn')[0].trigger('click')
+
+    download.allowRedownload = false
+    await flushPromises()
+
+    expect(download.selected.map((v) => v.video_id)).toEqual(['u1', 'u2', 'u3'])
+    expect((wrapper.findAll('.video-checkbox')[0].element as HTMLInputElement).disabled).toBe(true)
+  })
+})

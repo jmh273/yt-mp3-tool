@@ -2,7 +2,7 @@
 
 ## Purpose
 
-Defines the backend endpoint and frontend view for aggregating the most recent videos across all subscribed channels within a configurable time window. Covers the `/latest-videos` API (with optional per-request duration overrides), video duration enrichment on RSS responses, the disk-aware `downloaded_on_disk` flag, the latest-videos-feed right-pane view with inline filter controls and dynamic badge, the "allow re-download" override toggle, and the settings control for the time range.
+Defines the backend endpoint and frontend view for aggregating the most recent videos across all subscribed channels within a configurable time window. Covers the `/latest-videos` API (with optional per-request duration overrides), video duration enrichment on RSS responses, the disk-aware `downloaded_on_disk` flag, the latest-videos-feed right-pane view with inline filter controls and dynamic badge, and the settings control for the time range. The "allow re-download" override itself is a global concern defined by the `redownload-override` capability; this spec only describes how `downloaded_on_disk` participates in it.
 
 ## Requirements
 
@@ -145,11 +145,11 @@ The frontend SHALL display the latest-videos-feed view in the right pane when th
 - **THEN** that video SHALL be added to the download selection (same behaviour as channel video cards)
 
 ### Requirement: Client-side pagination for latest videos feed
-The latest-videos-feed view SHALL render the full result list one page at a time, with a fixed page size, to avoid rendering an unbounded number of cards at once. On a fresh load (or after "套用" re-fetches), the view SHALL display the first page only. A "載入更多" (load more) control SHALL append the next page of videos to the displayed list each time it is activated, preserving the order of the full list. When all videos are displayed, the "載入更多" control SHALL be hidden or disabled. Pagination is purely a display concern: it SHALL operate on the single already-fetched result list and SHALL NOT trigger additional `GET /latest-videos` requests.
+The latest-videos-feed view SHALL render the full result list one page at a time, with a fixed page size of 200 videos, to avoid rendering an unbounded number of cards at once. On a fresh load (or after "套用" re-fetches), the view SHALL display the first page only. A "載入更多" (load more) control SHALL append the next page of videos to the displayed list each time it is activated, preserving the order of the full list. When all videos are displayed, the "載入更多" control SHALL be hidden or disabled. Pagination is purely a display concern: it SHALL operate on the single already-fetched result list and SHALL NOT trigger additional `GET /latest-videos` requests.
 
 #### Scenario: Initial load shows first page
-- **WHEN** the feed loads a result list larger than one page (e.g. 248 videos with a page size of 50)
-- **THEN** only the first page of videos (the 50 most recent) SHALL be rendered
+- **WHEN** the feed loads a result list larger than one page (e.g. 480 videos with a page size of 200)
+- **THEN** only the first page of videos (the 200 most recent) SHALL be rendered
 - **AND** a "載入更多" control SHALL be visible
 
 #### Scenario: Load more appends the next page
@@ -167,23 +167,31 @@ The latest-videos-feed view SHALL render the full result list one page at a time
 - **THEN** the displayed list SHALL reset to the first page of the new result set
 
 #### Scenario: Small result set needs no load more
-- **WHEN** the full result set fits within a single page (count ≤ page size)
+- **WHEN** the full result set fits within a single page (count ≤ 200)
 - **THEN** all videos SHALL be displayed and the "載入更多" control SHALL NOT be shown
+
+#### Scenario: Typical result set fits in one page
+- **WHEN** the feed loads 180 matching videos
+- **THEN** all 180 SHALL be rendered without the user activating "載入更多"
 
 ### Requirement: Count badge reflects total matches without cap warning
 The latest-videos-feed view SHALL display a count badge reporting the total number of videos in the full result set. The badge SHALL NOT display any "已達上限" (limit reached) warning or advise the user to shorten the time window, because the result set is no longer capped. When the displayed list is shorter than the full result set (pagination in progress), the view SHALL also indicate how many videos are currently shown relative to the total.
 
 #### Scenario: Badge shows total count
-- **WHEN** the feed has loaded 248 matching videos
-- **THEN** the count badge SHALL report 248 (the full total), not a capped value
+- **WHEN** the feed has loaded 480 matching videos
+- **THEN** the count badge SHALL report 480 (the full total), not a capped value
 
 #### Scenario: No cap warning shown
-- **WHEN** the result set contains 100 or more videos
+- **WHEN** the result set contains 200 or more videos
 - **THEN** the count badge SHALL NOT show any "已達上限" wording nor advise shortening the time window
 
 #### Scenario: Shown-vs-total indication while paginating
-- **WHEN** 50 of 248 videos are currently displayed
-- **THEN** the view SHALL indicate that 50 of 248 videos are shown
+- **WHEN** 200 of 480 videos are currently displayed
+- **THEN** the view SHALL indicate that 200 of 480 videos are shown
+
+#### Scenario: No shown-vs-total indication when fully displayed
+- **WHEN** the full result set fits within one page and every video is displayed
+- **THEN** the badge SHALL report the total only, without a shown-vs-total fragment
 
 ### Requirement: Inline filter controls for latest videos feed
 The latest-videos-feed view SHALL provide inline controls allowing the user to adjust the time range (hours), minimum duration (minutes), and maximum duration (minutes) for the current view, and to apply those values by triggering a new fetch. The controls SHALL be pre-populated from the user's saved settings on initial load. Adjustments made via these controls SHALL affect only the current fetch and SHALL NOT be written back to persisted settings.
@@ -222,46 +230,27 @@ The latest-videos-feed view SHALL provide inline controls allowing the user to a
 - **THEN** the controls SHALL again be pre-populated from `settings.latest_hours`, `settings.min_duration_minutes`, and `settings.max_duration_minutes`
 
 ### Requirement: Disable selection of videos already downloaded
-The latest-videos-feed view SHALL, by default, disable the download checkbox of any video whose `downloaded_on_disk` is `true`, in addition to the existing rule that disables checkboxes for videos already marked as downloaded in the session via the download store. The "✅ 已下載" badge SHALL be shown for videos meeting either of these conditions, regardless of whether the checkbox is currently disabled or has been re-enabled via the override described in the next requirement.
+The latest-videos-feed view SHALL, by default, disable the download checkbox of any video whose `downloaded_on_disk` is `true`, in addition to the existing rule that disables checkboxes for videos already marked as downloaded in the session via the download store. The "✅ 已下載" badge SHALL be shown for videos meeting either of these conditions, regardless of whether the checkbox is currently disabled or has been re-enabled via the global "允許再次下載" override (see the `redownload-override` capability).
+
+Both conditions SHALL feed the same override: when the global override is ON, a video flagged `downloaded_on_disk: true` SHALL become selectable exactly like a video flagged only by the session download store. The latest-videos-feed view SHALL NOT own the override state or its control; it consumes the shared application-level state.
 
 #### Scenario: Disk match disables checkbox
-- **WHEN** a video card is rendered, its `downloaded_on_disk` is `true`, and the "允許再次下載" override is OFF
+- **WHEN** a video card is rendered, its `downloaded_on_disk` is `true`, and the global "允許再次下載" override is OFF
 - **THEN** its checkbox SHALL be `disabled` and its title row SHALL show the "✅ 已下載" badge
 
 #### Scenario: Disk match excludes from selection toggle
-- **WHEN** the user clicks on the disabled checkbox of a video flagged `downloaded_on_disk: true` (with override OFF)
+- **WHEN** the user clicks on the disabled checkbox of a video flagged `downloaded_on_disk: true` (with the override OFF)
 - **THEN** no change SHALL occur in the download selection store
 
 #### Scenario: Session-marked downloads still disable
 - **WHEN** a video has `downloaded_on_disk: false` from the backend but `download.isDownloaded(video_id)` returns `true` (e.g. just completed in this session), and the override is OFF
 - **THEN** the checkbox SHALL remain disabled and the badge SHALL remain visible
 
-### Requirement: "Allow re-download" override toggle
-The latest-videos-feed view SHALL provide a toggle control labelled "允許再次下載" (or equivalent) in its filter-bar region, defaulting to OFF on every mount. When the toggle is ON, the checkboxes of videos whose `downloaded_on_disk` is `true` AND/OR whose `download.isDownloaded(video_id)` is `true` SHALL be enabled and the user SHALL be able to add them to the download selection like any other video. The "✅ 已下載" badge SHALL continue to be displayed on those videos, providing visual feedback that they have already been downloaded. The toggle state SHALL NOT be persisted to settings or to localStorage; navigating away from the view and back SHALL reset the toggle to OFF.
-
-#### Scenario: Toggle default state on view open
-- **WHEN** the user opens the latest-videos-feed view
-- **THEN** the "允許再次下載" toggle SHALL be OFF
-
-#### Scenario: Turning toggle ON re-enables checkboxes
-- **WHEN** a video has `downloaded_on_disk: true` and the user switches the toggle to ON
-- **THEN** the video's checkbox SHALL no longer be `disabled`
-- **AND** the "✅ 已下載" badge SHALL still be visible on that card
-
-#### Scenario: Selecting an already-downloaded video with override ON
-- **WHEN** the toggle is ON and the user clicks the checkbox of a `downloaded_on_disk: true` video
-- **THEN** the video SHALL be added to the download selection store
-- **AND** subsequent download flow SHALL treat it the same as any other newly selected video (no special back-end gating)
-
-#### Scenario: Turning toggle OFF restores disabled state
-- **WHEN** the toggle is switched from ON back to OFF and any already-downloaded videos are currently selected
-- **THEN** those videos SHALL be removed from the download selection store
-- **AND** their checkboxes SHALL be `disabled` again with the badge visible
-
-#### Scenario: Override not persisted across mounts
-- **WHEN** the user turns the toggle ON, navigates away (e.g. to a channel) and returns to the latest-videos-feed view
-- **THEN** the toggle SHALL be OFF again
-- **AND** any previously re-enabled, already-downloaded videos SHALL be `disabled` again
+#### Scenario: Disk match becomes selectable under the global override
+- **WHEN** a video has `downloaded_on_disk: true` and the global override is ON
+- **THEN** its checkbox SHALL NOT be `disabled`
+- **AND** its checkbox SHALL reflect only whether the video is currently in the download selection
+- **AND** the "✅ 已下載" badge SHALL still be visible
 
 ### Requirement: Time range setting for latest videos
 The settings page SHALL include a numeric input field "最新影片時間範圍（小時）" mapped to the `latest_hours` setting (integer, min 1, max 168). The default value SHALL be 24. This value SHALL be used as the default `hours` parameter when fetching the latest-videos-feed.

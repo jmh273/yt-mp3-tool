@@ -452,3 +452,52 @@ describe('downloadStore', () => {
     expect(store.progress['v1'].status).toBe('downloading')
   })
 })
+
+// ── 全域「允許再次下載」覆寫開關 ────────────────────────────────────────────────
+describe('downloadStore allowRedownload', () => {
+  beforeEach(() => {
+    setActivePinia(createPinia())
+    localStorage.clear()
+  })
+
+  it('預設為 false', () => {
+    const store = useDownloadStore()
+    expect(store.allowRedownload).toBe(false)
+  })
+
+  it('切換後不寫入 localStorage（刻意不持久化）', async () => {
+    const store = useDownloadStore()
+    const before = { ...localStorage }
+
+    store.allowRedownload = true
+    await nextTick()
+
+    expect(store.allowRedownload).toBe(true)
+    expect({ ...localStorage }).toEqual(before)
+  })
+
+  it('重建 store 後回到 false（重新整理即恢復保護）', () => {
+    const store = useDownloadStore()
+    store.allowRedownload = true
+
+    setActivePinia(createPinia())
+    const fresh = useDownloadStore()
+
+    expect(fresh.allowRedownload).toBe(false)
+  })
+
+  it('由 true 切回 false 時不移除 selected 中的已下載影片', async () => {
+    const store = useDownloadStore()
+    store.markAsDownloaded('v1')
+
+    store.allowRedownload = true
+    store.toggle(FAKE_VIDEO)
+    expect(store.selected).toHaveLength(1)
+
+    store.allowRedownload = false
+    await nextTick()
+
+    expect(store.selected).toHaveLength(1)
+    expect(store.selected[0].video_id).toBe('v1')
+  })
+})

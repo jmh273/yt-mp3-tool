@@ -13,8 +13,8 @@
             <input
               type="checkbox"
               class="video-checkbox"
-              :checked="download.isSelected(v.video_id) || download.isDownloaded(v.video_id)"
-              :disabled="download.isDownloaded(v.video_id)"
+              :checked="download.isSelected(v.video_id) || isBlocked(v.video_id)"
+              :disabled="isBlocked(v.video_id)"
               @change="download.toggle(v)"
             />
             <img :src="v.thumbnail" :alt="v.title" class="thumb" @click="player.open(v.video_id)" />
@@ -50,6 +50,12 @@ const emit = defineEmits<{ (e: 'back'): void }>()
 const download = useDownloadStore()
 const quota = useQuotaStore()
 const player = usePlayerStore()
+
+// 「允許再次下載」為全域開關（HomeView header）。停用與勾選呈現共用同一判定，
+// 否則開關開啟後 checkbox 會恆為勾選、點擊沒有視覺回饋。
+function isBlocked(videoId: string): boolean {
+  return download.isDownloaded(videoId) && !download.allowRedownload
+}
 
 const videos = ref<VideoItem[]>([])
 const channelTitle = ref('')

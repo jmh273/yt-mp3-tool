@@ -2,6 +2,7 @@ import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { mount, flushPromises } from '@vue/test-utils'
 import { setActivePinia, createPinia } from 'pinia'
 import SearchVideosFeed from '@/components/SearchVideosFeed.vue'
+import { useDownloadStore } from '@/stores/download'
 import { usePlayerStore } from '@/stores/player'
 import { useToastStore } from '@/stores/toast'
 import { useWatchlistStore } from '@/stores/watchlist'
@@ -312,5 +313,72 @@ describe('SearchVideosFeed', () => {
 
     snap('SearchVideosFeed|4. 查無符合條件的影片', wrapper.html(), CSS)
     expect(wrapper.text()).toContain('查無符合條件的影片')
+  })
+})
+
+// ── 全域「允許再次下載」覆寫開關 ────────────────────────────────────────────────
+describe('SearchVideosFeed 全域「允許再次下載」', () => {
+  beforeEach(() => {
+    vi.clearAllMocks()
+    setActivePinia(createPinia())
+    localStorage.clear()
+  })
+
+  async function mountWithDownloaded() {
+    const { apiGet } = await import('@/api')
+    vi.mocked(apiGet).mockResolvedValueOnce({ videos: [makeVideo('s1'), makeVideo('s2')] })
+    const download = useDownloadStore()
+    download.markAsDownloaded('s1')
+
+    const wrapper = mount(SearchVideosFeed)
+    await wrapper.find('input').setValue('lofi')
+    await wrapper.find('button').trigger('click')
+    await flushPromises()
+    return { wrapper, download }
+  }
+
+  it('開關 OFF：已下載影片 disabled 且呈現已勾選', async () => {
+    const { wrapper } = await mountWithDownloaded()
+
+    const cb = wrapper.findAll('.video-checkbox')[0].element as HTMLInputElement
+    expect(cb.disabled).toBe(true)
+    expect(cb.checked).toBe(true)
+    expect(wrapper.find('.dl-badge').exists()).toBe(true)
+  })
+
+  it('開關 ON：已下載影片可操作且呈現未勾選，徽章仍在', async () => {
+    const { wrapper, download } = await mountWithDownloaded()
+    download.allowRedownload = true
+    await flushPromises()
+
+    const cb = wrapper.findAll('.video-checkbox')[0].element as HTMLInputElement
+    expect(cb.disabled).toBe(false)
+    expect(cb.checked).toBe(false)
+    expect(wrapper.find('.dl-badge').exists()).toBe(true)
+  })
+
+  it('開關 ON：點擊已下載影片加入 selected 並轉為已勾選', async () => {
+    const { wrapper, download } = await mountWithDownloaded()
+    download.allowRedownload = true
+    await flushPromises()
+
+    await wrapper.findAll('.video-checkbox')[0].trigger('change')
+
+    expect(download.selected.map((v) => v.video_id)).toEqual(['s1'])
+    expect((wrapper.findAll('.video-checkbox')[0].element as HTMLInputElement).checked).toBe(true)
+  })
+
+  it('關閉開關後 selected 內容不變', async () => {
+    const { wrapper, download } = await mountWithDownloaded()
+    download.allowRedownload = true
+    await flushPromises()
+    await wrapper.findAll('.video-checkbox')[0].trigger('change')
+    expect(download.selected).toHaveLength(1)
+
+    download.allowRedownload = false
+    await flushPromises()
+
+    expect(download.selected).toHaveLength(1)
+    expect((wrapper.findAll('.video-checkbox')[0].element as HTMLInputElement).disabled).toBe(true)
   })
 })

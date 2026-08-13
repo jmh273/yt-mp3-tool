@@ -72,8 +72,8 @@
             <input
               type="checkbox"
               class="video-checkbox"
-              :checked="download.isSelected(v.video_id) || download.isDownloaded(v.video_id)"
-              :disabled="download.isDownloaded(v.video_id)"
+              :checked="download.isSelected(v.video_id) || isBlocked(v.video_id)"
+              :disabled="isBlocked(v.video_id)"
               @change="download.toggle(v)"
             />
             <img :src="v.thumbnail" :alt="v.title" class="thumb" @click="player.open(v.video_id)" />
@@ -177,17 +177,25 @@ async function handleParse() {
   }
 }
 
+// 「允許再次下載」為全域開關（HomeView header）。停用與勾選呈現共用同一判定，
+// 否則開關開啟後 checkbox 會恆為勾選、點擊沒有視覺回饋。
+function isBlocked(videoId: string): boolean {
+  return download.isDownloaded(videoId) && !download.allowRedownload
+}
+
 function selectAllOnPage() {
   pagedVideos.value.forEach((v) => {
-    if (!download.isDownloaded(v.video_id) && !download.isSelected(v.video_id)) {
+    if (!isBlocked(v.video_id) && !download.isSelected(v.video_id)) {
       download.toggle(v)
     }
   })
 }
 
+// 只依實際選取狀態判斷：開關 ON 時加入的已下載影片也必須能被取消，
+// 否則在「關閉開關不清理 selected」的前提下會失去反悔路徑。
 function deselectAllOnPage() {
   pagedVideos.value.forEach((v) => {
-    if (!download.isDownloaded(v.video_id) && download.isSelected(v.video_id)) {
+    if (download.isSelected(v.video_id)) {
       download.toggle(v)
     }
   })

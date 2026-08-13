@@ -54,8 +54,8 @@
           <input
             type="checkbox"
             class="video-checkbox"
-            :checked="download.isSelected(v.video_id) || download.isDownloaded(v.video_id)"
-            :disabled="download.isDownloaded(v.video_id)"
+            :checked="download.isSelected(v.video_id) || isBlocked(v.video_id)"
+            :disabled="isBlocked(v.video_id)"
             @change="download.toggle(v)"
           />
           <img :src="v.thumbnail" :alt="v.title" class="thumb" @click="player.open(v.video_id)" />
@@ -63,7 +63,7 @@
           <span class="new-channel-badge">★ 新頻道</span>
         </div>
         <div class="info">
-          <span class="title" :title="v.title">{{ v.title }}</span>
+          <span class="title" :title="v.title">{{ v.title }} <span v-if="download.isDownloaded(v.video_id)" class="dl-badge">✅ 已下載</span></span>
           <div class="meta">
             <span class="channel">{{ v.channel_title }}</span>
             <div class="meta-row">
@@ -123,6 +123,12 @@ const quota = useQuotaStore()
 const player = usePlayerStore()
 const discovery = useDiscoveryStore()
 const watchlist = useWatchlistStore()
+
+// 「允許再次下載」為全域開關（HomeView header）。停用與勾選呈現共用同一判定，
+// 否則開關開啟後 checkbox 會恆為勾選、點擊沒有視覺回饋。
+function isBlocked(videoId: string): boolean {
+  return download.isDownloaded(videoId) && !download.allowRedownload
+}
 
 async function handleRefreshAnalysis() {
   if (!confirm('重新分析訂閱會花 10–30 秒（重打 YouTube API 撈關鍵字 + 重抓相似頻道）。要繼續嗎？')) return
@@ -278,6 +284,7 @@ ul { list-style: none; padding: 0; margin: 0; }
   display: -webkit-box; -webkit-line-clamp: 2; line-clamp: 2; -webkit-box-orient: vertical;
   overflow: hidden; text-overflow: ellipsis; white-space: normal; line-height: 1.4;
 }
+.dl-badge { font-size: 0.7rem; color: #4caf50; font-weight: normal; margin-left: 0.3rem; white-space: nowrap; display: inline-block; }
 .meta { display: flex; flex-direction: column; gap: 0.2rem; }
 .meta-row { display: flex; flex-direction: row; align-items: baseline; gap: 0.35rem; }
 .channel { font-size: 0.75rem; color: #555; font-weight: 500; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }

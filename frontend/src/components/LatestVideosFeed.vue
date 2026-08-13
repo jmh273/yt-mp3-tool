@@ -42,10 +42,6 @@
       >
         {{ fetching ? '套用中…' : '套用' }}
       </button>
-      <label class="redownload-toggle">
-        <input type="checkbox" v-model="allowRedownload" />
-        <span>允許再次下載</span>
-      </label>
       <p v-if="validationError" class="field-error">{{ validationError }}</p>
       <p class="hint">此處的調整只影響目前瀏覽，不會修改設定預設值。</p>
     </div>
@@ -60,8 +56,8 @@
           <input
             type="checkbox"
             class="video-checkbox"
-            :checked="download.isSelected(v.video_id) || (isAlreadyDownloaded(v) && !allowRedownload)"
-            :disabled="isAlreadyDownloaded(v) && !allowRedownload"
+            :checked="download.isSelected(v.video_id) || isBlocked(v)"
+            :disabled="isBlocked(v)"
             @change="download.toggle(v)"
           />
           <img :src="v.thumbnail" :alt="v.title" class="thumb" @click="player.open(v.video_id)" />
@@ -86,7 +82,7 @@
 </template>
 
 <script setup lang="ts">
-import { ref, computed, onMounted, watch } from 'vue'
+import { ref, computed, onMounted } from 'vue'
 import { apiGet } from '@/api'
 import { useDownloadStore, type VideoItem } from '@/stores/download'
 import { useQuotaStore } from '@/stores/quota'
@@ -100,7 +96,7 @@ const loading = ref(true)
 const fetching = ref(false)
 const error = ref('')
 
-const PAGE_SIZE = 50
+const PAGE_SIZE = 200
 const displayCount = ref(PAGE_SIZE)
 const displayedVideos = computed(() => videos.value.slice(0, displayCount.value))
 
@@ -108,21 +104,15 @@ function loadMore() {
   displayCount.value += PAGE_SIZE
 }
 
-const allowRedownload = ref(false)
-
 function isAlreadyDownloaded(v: VideoItem): boolean {
   return download.isDownloaded(v.video_id) || v.downloaded_on_disk === true
 }
 
-watch(allowRedownload, (now, prev) => {
-  if (prev && !now) {
-    for (const v of [...download.selected]) {
-      if (isAlreadyDownloaded(v)) {
-        download.toggle(v)
-      }
-    }
-  }
-})
+// 「允許再次下載」為全域狀態（download store），控制項在 HomeView header。
+// 關閉開關只恢復 checkbox 的停用呈現，刻意不從 download.selected 移除任何影片。
+function isBlocked(v: VideoItem): boolean {
+  return isAlreadyDownloaded(v) && !download.allowRedownload
+}
 
 const hoursInput = ref(24)
 const minDurationInput = ref(3)
@@ -274,16 +264,6 @@ function formatDate(iso: string): string {
   font-size: 0.85rem;
 }
 .apply-btn:disabled { opacity: 0.5; cursor: not-allowed; }
-.redownload-toggle {
-  display: flex;
-  align-items: center;
-  gap: 0.35rem;
-  font-size: 0.78rem;
-  color: #555;
-  cursor: pointer;
-  user-select: none;
-}
-.redownload-toggle input { cursor: pointer; }
 .field-error {
   color: #c00;
   font-size: 0.75rem;

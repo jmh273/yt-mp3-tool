@@ -6,6 +6,9 @@ import { runVerifySuite, mockJson } from './verify-helpers'
 // 回應欄位由 downloaded_today 更名為 downloaded_on_disk。
 // 此 e2e 驗證前端 UI：downloaded_on_disk=true 的影片 SHALL 顯示「✅ 已下載」徽章且 checkbox 停用；
 // false 者不顯示徽章、可勾選。（whole-root 掃描的正確性由 backend 單元測試涵蓋；此處 API 為 mock。）
+//
+// 註（redownload-override）：「允許再次下載」開關已移至 HomeView header（原本在最新影片頁的
+// filter-bar）。`.redownload-toggle` 選擇器不變且全頁唯一，故此處沿用；語意則變為全域開關。
 
 const ON_DISK_VIDEO = {
   video_id: 'od0001',

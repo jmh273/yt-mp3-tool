@@ -1,6 +1,6 @@
 // Verify for latest-videos-pagination.
 // Backend no longer caps /latest-videos at 100; the feed paginates the full
-// list client-side via a "載入更多" button (page size 50).
+// list client-side via a "載入更多" button (page size 200).
 // Run: npx tsx e2e/verify-latest-videos-pagination.ts  (from frontend/)
 
 import type { Page } from 'playwright'
@@ -10,8 +10,8 @@ import {
   type VerifyContext,
 } from './verify-helpers'
 
-const TOTAL = 120
-const PAGE_SIZE = 50
+const TOTAL = 480
+const PAGE_SIZE = 200
 
 function makeVideos(n: number) {
   return Array.from({ length: n }, (_, i) => {
@@ -43,7 +43,7 @@ function badgeTotal(text: string): number {
 
 const tasks = [
   {
-    name: '6.1 首頁只渲染 50 部，顯示「載入更多」與總數',
+    name: '6.1 首頁只渲染 200 部，顯示「載入更多」與總數',
     run: async (v: VerifyContext) => {
       await mockJson(v.browserCtx, '**/settings', {
         latest_hours: 24,
@@ -57,7 +57,7 @@ const tasks = [
 
       const count = await v.page.locator('.latest-feed .video-item').count()
       v.record(
-        '6.1 首頁渲染 50 部',
+        '6.1 首頁渲染 200 部',
         count === PAGE_SIZE ? 'PASS' : 'FAIL',
         `grid 顯示 ${count} 部`,
       )
@@ -67,13 +67,13 @@ const tasks = [
 
       const badge = await v.page.locator('.latest-feed .count-badge').innerText()
       v.record(
-        '6.1 count badge 顯示總數 120（無上限警告）',
+        '6.1 count badge 顯示總數 480（無上限警告）',
         badgeTotal(badge) === TOTAL && !badge.includes('已達上限') ? 'PASS' : 'FAIL',
         `badge="${badge.replace(/\n/g, ' ')}"`,
       )
       v.record(
-        '6.1 count badge 顯示「50 / 120」',
-        /50\s*\/\s*120/.test(badge) ? 'PASS' : 'FAIL',
+        '6.1 count badge 顯示「200 / 480」',
+        /200\s*\/\s*480/.test(badge) ? 'PASS' : 'FAIL',
         `badge="${badge.replace(/\n/g, ' ')}"`,
       )
     },
@@ -83,12 +83,12 @@ const tasks = [
     run: async (v: VerifyContext) => {
       await v.page.locator('.latest-feed .load-more-btn').click()
       await v.page.waitForFunction(
-        () => document.querySelectorAll('.latest-feed .video-item').length === 100,
+        () => document.querySelectorAll('.latest-feed .video-item').length === 400,
         null,
         { timeout: 5000 },
       )
       const count = await v.page.locator('.latest-feed .video-item').count()
-      v.record('6.1 點一次後顯示 100 部', count === 100 ? 'PASS' : 'FAIL', `grid 顯示 ${count} 部`)
+      v.record('6.1 點一次後顯示 400 部', count === 400 ? 'PASS' : 'FAIL', `grid 顯示 ${count} 部`)
 
       const stillVisible = await v.page.locator('.latest-feed .load-more-btn').isVisible()
       v.record('6.1 尚未全部顯示時按鈕仍在', stillVisible ? 'PASS' : 'FAIL', `visible=${stillVisible}`)
@@ -99,20 +99,20 @@ const tasks = [
     run: async (v: VerifyContext) => {
       await v.page.locator('.latest-feed .load-more-btn').click()
       await v.page.waitForFunction(
-        () => document.querySelectorAll('.latest-feed .video-item').length === 120,
+        () => document.querySelectorAll('.latest-feed .video-item').length === 480,
         null,
         { timeout: 5000 },
       )
       const count = await v.page.locator('.latest-feed .video-item').count()
-      v.record('6.1 再點後顯示全部 120 部', count === TOTAL ? 'PASS' : 'FAIL', `grid 顯示 ${count} 部`)
+      v.record('6.1 再點後顯示全部 480 部', count === TOTAL ? 'PASS' : 'FAIL', `grid 顯示 ${count} 部`)
 
       const gone = (await v.page.locator('.latest-feed .load-more-btn').count()) === 0
       v.record('6.1 全部顯示後「載入更多」消失', gone ? 'PASS' : 'FAIL', `按鈕數=${gone ? 0 : '>0'}`)
 
       const badge = await v.page.locator('.latest-feed .count-badge').innerText()
       v.record(
-        '6.1 全部顯示後不再有「x / 120」指示',
-        !/\/\s*120/.test(badge) ? 'PASS' : 'FAIL',
+        '6.1 全部顯示後不再有「x / 480」指示',
+        !/\/\s*480/.test(badge) ? 'PASS' : 'FAIL',
         `badge="${badge.replace(/\n/g, ' ')}"`,
       )
     },

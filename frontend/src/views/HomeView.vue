@@ -3,6 +3,15 @@
     <header>
       <h1>YT → MP3 <span v-if="version" class="version">v{{ version }}</span></h1>
       <div class="header-actions">
+        <label
+          class="redownload-toggle"
+          :class="{ on: downloadStore.allowRedownload }"
+          title="開啟後，已下載過的影片可再次勾選下載。此開關不會被記住，重新整理後自動關閉。"
+        >
+          <input type="checkbox" v-model="downloadStore.allowRedownload" />
+          <span>允許再次下載</span>
+        </label>
+
         <span class="quota-badge" :class="quota.level" :title="`API Quota: ${quotaUsedDisplay} / ${quota.limit}\n(跨帳號共用)`">
           API Quota: {{ quotaUsedDisplay }} / {{ quota.limit }}
         </span>
@@ -496,6 +505,28 @@ h1 { margin: 0; font-size: 1.2rem; }
 .account-logout-btn:hover { color: #d1242f; }
 .add-account { color: #0969da; font-weight: 500; justify-content: center; }
 .add-account:hover { background: #f0f6ff; }
+
+/* 全域「允許再次下載」開關：OFF 為安全預設故壓低視覺重量，
+   ON 才需要被注意到（使用者可能在別頁忘了它還開著）。 */
+.redownload-toggle {
+  display: flex;
+  align-items: center;
+  gap: 0.35rem;
+  font-size: 0.78rem;
+  color: #555;
+  cursor: pointer;
+  user-select: none;
+  padding: 0.2rem 0.5rem;
+  border: 1px solid transparent;
+  border-radius: 12px;
+}
+.redownload-toggle input { cursor: pointer; }
+.redownload-toggle.on {
+  background: #fff4e0;
+  color: #b25e00;
+  border-color: #ffd599;
+  font-weight: 500;
+}
 
 .quota-badge {
   font-size: 0.78rem;
