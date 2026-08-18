@@ -987,3 +987,21 @@ def test_missing_po_token_does_not_fail_batch(tmp_path):
 
     items = main.download_progress[task_id]["items"]
     assert all(i["status"] == "done" for i in items.values())
+
+
+def test_po_token_unblocks_clients_that_need_it():
+    """有供給 PO Token 時不該再擋 web/mweb——那些 client 正是靠 token 才可用，
+    擋掉的話使用者填了 token 也永遠用不到。"""
+    # mweb 不在封鎖清單：它實測可下載（只有 adaptive 格式需要 token）。
+    # web 才是沒有 token 就完全拿不到格式的那個。
+    settings = {"youtube_player_clients": ["web", "tv"]}
+    assert main._resolve_player_clients(settings, has_po_token=False) == ["tv"]
+    assert main._resolve_player_clients(settings, has_po_token=True) == ["web", "tv"]
+
+
+def test_ejs_solver_status_reports_usable():
+    """打包後沒有 dist-info，只讀 metadata 無法區分『沒裝』與『讀不到版本』，
+    因此必須實際探測 solver 是否可用。"""
+    version, usable = main._ejs_solver_status()
+    assert usable is True
+    assert version

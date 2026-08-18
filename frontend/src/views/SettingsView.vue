@@ -148,7 +148,15 @@
 
       <dl class="ytdlp-versions" data-testid="ytdlp-versions">
         <div><dt>yt-dlp</dt><dd>{{ ytdlpInfo?.yt_dlp ?? '—' }}</dd></div>
-        <div><dt>EJS solver</dt><dd>{{ ytdlpInfo?.yt_dlp_ejs ?? '—' }}</dd></div>
+        <div>
+          <dt>EJS solver</dt>
+          <dd :class="{ missing: ytdlpInfo && ytdlpInfo.yt_dlp_ejs_usable === false }">
+            <template v-if="ytdlpInfo && ytdlpInfo.yt_dlp_ejs_usable === false">
+              無法載入 — 下載很可能失敗
+            </template>
+            <template v-else>{{ ytdlpInfo?.yt_dlp_ejs ?? '—' }}</template>
+          </dd>
+        </div>
         <div>
           <dt>目前來源</dt>
           <dd>
@@ -227,6 +235,7 @@ const healthError = ref('')
 interface YtdlpInfo {
   yt_dlp: string
   yt_dlp_ejs: string | null
+  yt_dlp_ejs_usable?: boolean
   source: 'managed' | 'bundled'
   js_runtime: string | null
 }

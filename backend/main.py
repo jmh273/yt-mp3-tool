@@ -2737,16 +2737,18 @@ def _build_ydl_opts(
 _BLOCKED_PLAYER_CLIENTS = frozenset({"android_vr", "web", "ios", "web_safari"})
 
 
-def _resolve_player_clients(settings: dict) -> list[str]:
-    """讀取 player client 優先序，濾掉已知失效者；結果為空時退回預設。"""
+def _resolve_player_clients(settings: dict, has_po_token: bool = False) -> list[str]:
+    """讀取 player client 優先序；結果為空時退回預設。
+
+    _BLOCKED_PLAYER_CLIENTS 之所以失效，是因為它們需要 GVS PO Token。使用者若已
+    供給 token，就不該再擋——否則填了 token 也永遠用不到，PO Token 功能等於白做。
+    """
     raw = settings.get("youtube_player_clients")
     if not isinstance(raw, list):
         raw = DEFAULT_SETTINGS["youtube_player_clients"]
-    clients = [
-        c.strip()
-        for c in raw
-        if isinstance(c, str) and c.strip() and c.strip() not in _BLOCKED_PLAYER_CLIENTS
-    ]
+    clients = [c.strip() for c in raw if isinstance(c, str) and c.strip()]
+    if not has_po_token:
+        clients = [c for c in clients if c not in _BLOCKED_PLAYER_CLIENTS]
     return clients or list(DEFAULT_SETTINGS["youtube_player_clients"])
 
 
@@ -2907,8 +2909,8 @@ async def start_download(body: DownloadRequest):
 
     fmt, quality = _normalize_format_quality(body.format, body.quality)
     concurrency = _resolve_concurrency(settings)
-    player_clients = _resolve_player_clients(settings)
     po_tokens = _resolve_po_tokens(settings)
+    player_clients = _resolve_player_clients(settings, has_po_token=bool(po_tokens))
     max_retries, retry_backoff = _resolve_retry_config(settings)
 
     loop = asyncio.get_event_loop()
@@ -3483,13 +3485,29 @@ def version():
 
 
 # ── yt-dlp 版本管理 ───────────────────────────────────────────────────────────
-def _installed_ejs_version() -> str | None:
+def _ejs_solver_status() -> tuple[str | None, bool]:
+    """回傳 (版本, 是否真的可用)。
+
+    打包後沒有 dist-info，只讀 importlib.metadata 會永遠是 None——那無法區分
+    「沒裝」與「裝了但讀不到版本」。這裡直接 import yt-dlp 實際使用的模組來探測。
+    """
+    version = None
     try:
         import importlib.metadata as _md
 
-        return _md.version("yt-dlp-ejs")
+        version = _md.version("yt-dlp-ejs")
     except Exception:
-        return None
+        pass
+    try:
+        import yt_dlp_ejs.yt.solver as _solver
+
+        usable = bool(_solver.core()) and bool(_solver.lib())
+        version = version or getattr(
+            __import__("yt_dlp_ejs"), "version", None
+        )
+    except Exception:
+        usable = False
+    return version, usable
 
 
 @app.get("/ytdlp/version")
@@ -3497,9 +3515,11 @@ def ytdlp_version():
     """目前生效的 yt-dlp / EJS solver 版本與來源（受管或內建）。"""
     import ytdlp_loader
 
+    ejs_version, ejs_usable = _ejs_solver_status()
     return {
         "yt_dlp": yt_dlp.version.__version__,
-        "yt_dlp_ejs": _installed_ejs_version(),
+        "yt_dlp_ejs": ejs_version,
+        "yt_dlp_ejs_usable": ejs_usable,
         "source": ytdlp_loader.active_source(),
         "js_runtime": str(_js_runtime_path()) if _js_runtime_path() else None,
     }
