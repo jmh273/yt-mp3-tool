@@ -19,8 +19,10 @@ export interface ProgressItem {
   title: string
   percent: number
   speed?: string
-  status: 'pending' | 'downloading' | 'converting' | 'done' | 'error'
+  status: 'pending' | 'downloading' | 'converting' | 'retrying' | 'done' | 'error'
   error?: string
+  /** 目前為第幾次嘗試；重試中與最終失敗時由後端帶入 */
+  attempt?: number
 }
 
 const SELECTED_STORAGE_KEY = 'yt_mp3_selected'

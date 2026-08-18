@@ -27,22 +27,109 @@ def test_drive_error_detail_passes_through_plain_error():
     assert main._drive_error_detail(ValueError("boom")) == "boom"
 
 
-def test_scopes_include_drive_file():
-    assert "https://www.googleapis.com/auth/drive.file" in main.SCOPES
+def test_main_scopes_exclude_drive_file():
+    """SCOPES (YouTube 登入用) 不包含 drive.file：兩者不可在同一 OAuth 請求中混用"""
+    assert "https://www.googleapis.com/auth/drive.file" not in main.SCOPES
 
 
-def test_credentials_missing_drive_file_scope_requires_reauth(tmp_path):
-    token_file = tmp_path / "token.json"
-    token_file.write_text(json.dumps({"scopes": ["https://www.googleapis.com/auth/youtube"]}))
+def test_drive_scopes_include_drive_file():
+    """DRIVE_SCOPES (独立 Drive 授權用) 包含 drive.file"""
+    assert "https://www.googleapis.com/auth/drive.file" in main.DRIVE_SCOPES
+
+
+def test_load_drive_credentials_reads_from_drive_token_file(tmp_path):
+    """正常情況：load_drive_credentials 從 <email>_drive.json 讀取 Drive token"""
+    drive_token_file = tmp_path / "user@example.com_drive.json"
+    drive_token_file.write_text(
+        json.dumps({"scopes": ["https://www.googleapis.com/auth/drive.file"]})
+    )
+    creds = MagicMock()
+    creds.scopes = ["https://www.googleapis.com/auth/drive.file"]
+    creds.expired = False
+    creds.valid = True
+    with patch("main._get_current_email", return_value="user@example.com"), \
+         patch("main._token_path", return_value=tmp_path / "user@example.com.json"), \
+         patch("main.Credentials.from_authorized_user_file", return_value=creds):
+        result = main.load_drive_credentials()
+    assert result is creds
+
+
+def test_load_drive_credentials_backward_compat_main_token(tmp_path):
+    """向下相容：旧版主 token 展含 drive.file 時仍可使用"""
+    main_token_file = tmp_path / "user@example.com.json"
+    main_token_file.write_text(
+        json.dumps({"scopes": ["https://www.googleapis.com/auth/drive.file"]})
+    )
+    creds = MagicMock()
+    creds.scopes = ["https://www.googleapis.com/auth/drive.file"]
+    creds.expired = False
+    creds.valid = True
+    # drive token 檔不存在，應回諾主 token
+    with patch("main._get_current_email", return_value="user@example.com"), \
+         patch("main._token_path", return_value=main_token_file), \
+         patch("main.Credentials.from_authorized_user_file", return_value=creds):
+        result = main.load_drive_credentials()
+    assert result is creds
+
+
+def test_load_drive_credentials_missing_drive_token_returns_none(tmp_path):
+    """無 drive token檔且主 token 也沒有 drive.file scope 時庇回 None"""
+    main_token_file = tmp_path / "user@example.com.json"
+    main_token_file.write_text(json.dumps({"scopes": ["https://www.googleapis.com/auth/youtube"]}))
     creds = MagicMock()
     creds.scopes = ["https://www.googleapis.com/auth/youtube"]
+    # 主 token 不含 drive.file，應回 None，且不動既有 token 檔
     with patch("main._get_current_email", return_value="user@example.com"), \
-         patch("main._token_path", return_value=token_file), \
+         patch("main._token_path", return_value=main_token_file), \
          patch("main.Credentials.from_authorized_user_file", return_value=creds):
         assert main.load_drive_credentials() is None
-    # 缺 scope 須回 None 觸發 401，但不可動既有 token（與 YouTube 共用，刪掉會整個登出）
-    assert token_file.exists()
-    assert not token_file.with_suffix(".json.needs-drive-file").exists()
+    assert main_token_file.exists()
+
+
+def test_drive_oauth_rejects_mismatched_account(tmp_path, capsys):
+    """帳號不一致時不儲存 Drive token（Q1）"""
+    client_secret_file = tmp_path / "client_secret.json"
+    client_secret_file.write_text(json.dumps({"installed": {"client_id": "x"}}))
+    mismatched_creds = MagicMock()
+    complete_event = threading.Event()
+
+    def fake_fetch_email(creds):
+        return "other@example.com"  # 與登入帳號不同
+
+    def fake_flow_from_file(path, scopes):
+        flow = MagicMock()
+        flow.run_local_server.return_value = mismatched_creds
+        return flow
+
+    drive_token_file = tmp_path / "user@example.com_drive.json"
+
+    original_do_oauth = None  # 打監聖入 thread 看會不會備檔
+
+    with patch("main._find_client_secret", return_value=client_secret_file), \
+         patch("main._get_current_email", return_value="user@example.com"), \
+         patch("main._fetch_email", side_effect=fake_fetch_email), \
+         patch("main.InstalledAppFlow.from_client_secrets_file", side_effect=fake_flow_from_file), \
+         patch("main._token_path", return_value=tmp_path / "user@example.com.json"):
+        from fastapi.testclient import TestClient
+        client = TestClient(main.app)
+        response = client.get("/auth/login/drive")
+        assert response.status_code == 200
+        # 等待背景執行緒完成
+        import time
+        time.sleep(0.5)
+
+    # Drive token 檔不應被建立
+    assert not drive_token_file.exists()
+
+
+def test_auth_login_drive_endpoint_exists():
+    """/auth/login/drive 端點必須存在"""
+    from fastapi.testclient import TestClient
+    client = TestClient(main.app)
+    with patch("main._find_client_secret", return_value=None):
+        resp = client.get("/auth/login/drive")
+        # client_secret 沒有時庇 500，但端點必須存在（不是 404）
+        assert resp.status_code != 404
 
 
 def test_ensure_drive_folder_reuses_existing_folder():

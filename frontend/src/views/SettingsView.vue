@@ -22,6 +22,14 @@
       >
         訂閱頻道健檢
       </button>
+      <button
+        class="tab"
+        :class="{ active: activeTab === 'ytdlp' }"
+        data-testid="tab-ytdlp"
+        @click="activeTab = 'ytdlp'"
+      >
+        下載元件
+      </button>
     </div>
 
     <div v-if="activeTab === 'settings'" class="form">
@@ -131,17 +139,73 @@
         </template>
       </template>
     </section>
+
+    <section v-if="activeTab === 'ytdlp'" class="ytdlp-panel">
+      <p class="hint">
+        yt-dlp 依賴 YouTube 的內部實作，YouTube 一改動就可能導致下載失敗。
+        這裡可以在不等新版程式的情況下自行更新下載元件。
+      </p>
+
+      <dl class="ytdlp-versions" data-testid="ytdlp-versions">
+        <div><dt>yt-dlp</dt><dd>{{ ytdlpInfo?.yt_dlp ?? '—' }}</dd></div>
+        <div><dt>EJS solver</dt><dd>{{ ytdlpInfo?.yt_dlp_ejs ?? '—' }}</dd></div>
+        <div>
+          <dt>目前來源</dt>
+          <dd>
+            <span class="src" :class="ytdlpInfo?.source">
+              {{ ytdlpInfo?.source === 'managed' ? '受管版本（可回退）' : '內建版本' }}
+            </span>
+          </dd>
+        </div>
+        <div>
+          <dt>JS runtime</dt>
+          <dd :class="{ missing: !ytdlpInfo?.js_runtime }">
+            {{ ytdlpInfo?.js_runtime ?? '未偵測到 — 下載很可能失敗' }}
+          </dd>
+        </div>
+      </dl>
+
+      <div class="ytdlp-actions">
+        <button class="check-btn" data-testid="ytdlp-check" @click="checkLatest" :disabled="ytdlpBusy">
+          {{ ytdlpBusy ? '處理中…' : '查詢最新版' }}
+        </button>
+        <button
+          v-if="ytdlpInfo?.source === 'managed'"
+          class="revert-btn"
+          data-testid="ytdlp-revert"
+          @click="revertYtdlp"
+          :disabled="ytdlpBusy"
+        >
+          回退為內建版本
+        </button>
+      </div>
+
+      <p v-if="latestInfo && !latestInfo.available" class="error" data-testid="ytdlp-offline">
+        {{ latestInfo.error }}
+      </p>
+      <template v-else-if="latestInfo?.available">
+        <p class="latest-line" data-testid="ytdlp-latest">
+          上游最新：yt-dlp {{ latestInfo.versions.yt_dlp }} · EJS {{ latestInfo.versions.yt_dlp_ejs }}
+        </p>
+        <button class="check-btn" data-testid="ytdlp-update" @click="updateYtdlp" :disabled="ytdlpBusy">
+          {{ ytdlpBusy ? '更新中…' : '更新下載元件' }}
+        </button>
+      </template>
+
+      <p v-if="ytdlpError" class="error" data-testid="ytdlp-error">{{ ytdlpError }}</p>
+      <p v-if="ytdlpNotice" class="ok" data-testid="ytdlp-notice">{{ ytdlpNotice }}</p>
+    </section>
   </div>
 </template>
 
 <script setup lang="ts">
 import { ref, onMounted } from 'vue'
-import { apiGet, apiPut, apiDelete } from '@/api'
+import { apiGet, apiPost, apiPut, apiDelete } from '@/api'
 import { useToastStore } from '@/stores/toast'
 
 const toast = useToastStore()
 
-const activeTab = ref<'settings' | 'health'>('settings')
+const activeTab = ref<'settings' | 'health' | 'ytdlp'>('settings')
 
 interface ProblemChannel {
   channel_id: string
@@ -158,6 +222,79 @@ const hasChecked = ref(false)
 const checked = ref(0)
 const problems = ref<ProblemChannel[]>([])
 const healthError = ref('')
+
+// ── 下載元件（yt-dlp）版本管理 ────────────────────────────────────────────────
+interface YtdlpInfo {
+  yt_dlp: string
+  yt_dlp_ejs: string | null
+  source: 'managed' | 'bundled'
+  js_runtime: string | null
+}
+interface LatestInfo {
+  available: boolean
+  error?: string
+  versions?: { yt_dlp: string; yt_dlp_ejs: string }
+}
+
+const ytdlpInfo = ref<YtdlpInfo | null>(null)
+const latestInfo = ref<LatestInfo | null>(null)
+const ytdlpBusy = ref(false)
+const ytdlpError = ref('')
+const ytdlpNotice = ref('')
+
+async function loadYtdlpInfo() {
+  try {
+    ytdlpInfo.value = await apiGet<YtdlpInfo>('/ytdlp/version')
+  } catch {
+    ytdlpInfo.value = null
+  }
+}
+
+async function checkLatest() {
+  ytdlpBusy.value = true
+  ytdlpError.value = ''
+  ytdlpNotice.value = ''
+  try {
+    latestInfo.value = await apiGet<LatestInfo>('/ytdlp/latest')
+  } catch (e: any) {
+    // 離線時降級為「無法查詢」，維持目前版本可用
+    latestInfo.value = { available: false, error: '無法查詢上游版本，維持目前版本。' }
+  } finally {
+    ytdlpBusy.value = false
+  }
+}
+
+async function updateYtdlp() {
+  ytdlpBusy.value = true
+  ytdlpError.value = ''
+  ytdlpNotice.value = ''
+  try {
+    const r = await apiPost<{ installed: Record<string, string>; message: string }>(
+      '/ytdlp/update', {},
+    )
+    ytdlpNotice.value = r.message
+    await loadYtdlpInfo()
+  } catch (e: any) {
+    ytdlpError.value = e?.message || '更新失敗，維持目前版本。'
+  } finally {
+    ytdlpBusy.value = false
+  }
+}
+
+async function revertYtdlp() {
+  ytdlpBusy.value = true
+  ytdlpError.value = ''
+  ytdlpNotice.value = ''
+  try {
+    const r = await apiPost<{ message: string }>('/ytdlp/revert', {})
+    ytdlpNotice.value = r.message
+    await loadYtdlpInfo()
+  } catch (e: any) {
+    ytdlpError.value = e?.message || '回退失敗。'
+  } finally {
+    ytdlpBusy.value = false
+  }
+}
 
 const REASON_LABELS: Record<string, string> = {
   no_uploads: '無上傳影片',
@@ -217,6 +354,7 @@ const saved = ref(false)
 const error = ref('')
 
 onMounted(async () => {
+  loadYtdlpInfo()
   const data = await apiGet<{
     output_path: string
     videos_per_channel: number
@@ -320,6 +458,17 @@ button:disabled { opacity: 0.6; cursor: not-allowed; }
 .tab.active { color: #c00; border-bottom-color: #c00; font-weight: 600; }
 
 .health-check { margin-top: 0; }
+.ytdlp-panel { margin-top: 0; }
+.ytdlp-versions { margin: 0.8rem 0; display: flex; flex-direction: column; gap: 0.35rem; }
+.ytdlp-versions > div { display: flex; gap: 0.6rem; font-size: 0.85rem; }
+.ytdlp-versions dt { color: #666; min-width: 7rem; margin: 0; }
+.ytdlp-versions dd { margin: 0; font-variant-numeric: tabular-nums; word-break: break-all; }
+.ytdlp-versions dd.missing { color: #c00; }
+.src.managed { color: #1565c0; }
+.src.bundled { color: #666; }
+.ytdlp-actions { display: flex; gap: 0.6rem; flex-wrap: wrap; }
+.revert-btn { padding: 0.4rem 1rem; background: #fff; color: #b25e00; border: 1px solid #ffd599; border-radius: 4px; cursor: pointer; font-size: 0.85rem; }
+.latest-line { font-size: 0.85rem; color: #333; margin: 0.6rem 0 0.4rem; }
 .check-btn { padding: 0.6rem 1.5rem; background: #ff0000; color: white; border: none; border-radius: 4px; cursor: pointer; }
 .check-btn:disabled { opacity: 0.6; cursor: not-allowed; }
 .health-summary { margin: 1rem 0 0.5rem; font-weight: 500; }

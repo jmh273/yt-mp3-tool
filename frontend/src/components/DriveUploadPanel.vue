@@ -91,16 +91,16 @@ async function onUpload() {
   await drive.startUpload(dirInput.value)
 }
 
-// 缺 drive.file scope 時的引導：觸發既有 OAuth 流程重新授權（新 token 會含 drive.file），
-// 完成後使用者再按一次上傳即可。
+// drive.file scope 需單獨授權（不可與 youtube 混合），觸發 /auth/login/drive
 async function reauthDrive() {
   reauthInProgress.value = true
   try {
-    await auth.login()
+    await auth.loginDrive()
   } catch {
     // 開啟瀏覽器失敗：保留提示，使用者可重試
   }
 }
+
 
 function uploadStatusLabel(status: string) {
   return { pending: '等待中', uploading: '上傳中', skipped: '已存在', done: '完成', error: '失敗' }[status] ?? status

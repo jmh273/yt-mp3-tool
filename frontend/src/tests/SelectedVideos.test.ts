@@ -454,3 +454,66 @@ describe('SelectedVideos target folder sequence alignment', () => {
     }))
   })
 })
+
+// ── 失敗原因與重試狀態（download-403-resilience）─────────────────────────────
+describe('SelectedVideos 失敗原因與重試狀態', () => {
+  beforeEach(() => {
+    setActivePinia(createPinia())
+    localStorage.clear()
+  })
+
+  function mountWithProgress(progress: Record<string, any>) {
+    const download = useDownloadStore()
+    download.progress = progress
+    const wrapper = mount(SelectedVideos)
+    return { wrapper, download }
+  }
+
+  it('失敗項顯示後端回報的錯誤字串', async () => {
+    const { wrapper } = mountWithProgress({
+      v1: {
+        title: '影片一',
+        percent: 100,
+        status: 'error',
+        error: 'unable to download video data: HTTP Error 403: Forbidden',
+      },
+    })
+    await flushPromises()
+
+    const err = wrapper.find('.item-error')
+    expect(err.exists()).toBe(true)
+    expect(err.text()).toContain('HTTP Error 403')
+  })
+
+  it('成功項不顯示錯誤區塊', async () => {
+    const { wrapper } = mountWithProgress({
+      v1: { title: '影片一', percent: 100, status: 'done' },
+    })
+    await flushPromises()
+
+    expect(wrapper.find('.item-error').exists()).toBe(false)
+  })
+
+  it('重試中不以失敗樣式呈現，並顯示嘗試次數', async () => {
+    const { wrapper } = mountWithProgress({
+      v1: { title: '影片一', percent: 0, status: 'retrying', attempt: 2, error: '403' },
+    })
+    await flushPromises()
+
+    expect(wrapper.text()).toContain('重試中')
+    expect(wrapper.text()).toContain('第 2 次')
+    // 重試中不是失敗：不得出現錯誤區塊，也不得套用 error 樣式
+    expect(wrapper.find('.item-error').exists()).toBe(false)
+    expect(wrapper.find('.bar.error').exists()).toBe(false)
+  })
+
+  it('重試中不計入失敗數', async () => {
+    const { wrapper } = mountWithProgress({
+      v1: { title: '影片一', percent: 0, status: 'retrying', attempt: 1 },
+      v2: { title: '影片二', percent: 100, status: 'done' },
+    })
+    await flushPromises()
+
+    expect(wrapper.text()).not.toContain('支失敗')
+  })
+})

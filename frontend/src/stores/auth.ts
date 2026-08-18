@@ -23,6 +23,11 @@ export const useAuthStore = defineStore('auth', () => {
     await apiGet('/auth/login')
   }
 
+  /** Drive 獨立授權（drive.file scope 不可與 youtube 混用，需單獨請求） */
+  async function loginDrive() {
+    await apiGet('/auth/login/drive')
+  }
+
   async function logout() {
     await apiPost('/auth/logout')
     await checkStatus()
@@ -57,6 +62,7 @@ export const useAuthStore = defineStore('auth', () => {
     accounts,
     checkStatus,
     login,
+    loginDrive,
     logout,
     logoutAccount,
     switchAccount,

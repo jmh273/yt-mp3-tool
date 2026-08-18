@@ -43,7 +43,9 @@ def test_run_download_failure(tmp_path):
         instance.download = MagicMock(side_effect=Exception("video unavailable"))
         MockYDL.return_value = instance
 
-        main.run_download(SAMPLE_VIDEOS, str(tmp_path), task_id)
+        # max_retries=0：本測試驗證的是「失敗會標記 error」，不是重試行為。
+        # 不指定的話會走完預設的退避重試，讓測試多花十幾秒。
+        main.run_download(SAMPLE_VIDEOS, str(tmp_path), task_id, max_retries=0)
 
     item = main.download_progress[task_id]["items"]["abc123"]
     assert item["status"] == "error"
@@ -571,7 +573,8 @@ def test_concurrent_all_marked_done(tmp_path):
         instance.__exit__ = MagicMock(return_value=False)
         instance.download = MagicMock(return_value=0)
         MockYDL.return_value = instance
-        main.run_download(videos, str(tmp_path), task_id, concurrency=3)
+        # max_retries=0：本測試驗證並行下單支失敗不阻塞其他影片，不是重試行為。
+        main.run_download(videos, str(tmp_path), task_id, concurrency=3, max_retries=0)
 
     items = main.download_progress[task_id]["items"]
     assert all(items[v["video_id"]]["status"] == "done" for v in videos)
@@ -646,7 +649,8 @@ def test_concurrent_partial_failure_does_not_block_others(tmp_path):
         return inst
 
     with patch("yt_dlp.YoutubeDL", side_effect=fake_ydl_init):
-        main.run_download(videos, str(tmp_path), task_id, concurrency=3)
+        # max_retries=0：本測試驗證並行下單支失敗不阻塞其他影片，不是重試行為。
+        main.run_download(videos, str(tmp_path), task_id, concurrency=3, max_retries=0)
 
     items = main.download_progress[task_id]["items"]
     assert items["ok1"]["status"] == "done"
@@ -730,3 +734,256 @@ def test_url_preview_watch_list_returns_video_ids_not_playlist_id():
     assert len(videos) == 2
     assert [v["video_id"] for v in videos] == ["2oW8gnmnXrU", "etM0xAeaVDM"]
     assert all(v["video_id"] != playlist_id for v in videos)
+
+
+# ── JS runtime / player client（download-403-resilience）─────────────────────
+def test_build_ydl_opts_includes_js_runtime(tmp_path):
+    """缺 JS runtime 時 yt-dlp 解不開 nsig challenge，媒體 URL 會被回 403。
+    路徑必須明確指定，不可依賴使用者 PATH。"""
+    opts = main._build_ydl_opts(str(tmp_path), "Song", lambda d: None, "mp3", 192)
+    runtime = main._js_runtime_path()
+    if runtime is None:
+        pytest.skip("此環境未散布 JS runtime")
+    assert opts["js_runtimes"] == {"deno": {"path": str(runtime)}}
+
+
+def test_build_ydl_opts_specifies_player_client(tmp_path):
+    """yt-dlp 的預設 client 選擇會落到 android_vr 並回 403，必須明確指定。"""
+    opts = main._build_ydl_opts(str(tmp_path), "Song", lambda d: None, "mp3", 192)
+    clients = opts["extractor_args"]["youtube"]["player_client"]
+    assert clients, "player_client 不可為空"
+    assert not set(clients) & main._BLOCKED_PLAYER_CLIENTS
+
+
+def test_build_ydl_opts_keeps_warnings(tmp_path):
+    """yt-dlp 的警告是判斷失敗根因的主要依據，不可被抑制。"""
+    opts = main._build_ydl_opts(str(tmp_path), "Song", lambda d: None, "mp3", 192)
+    assert "no_warnings" not in opts
+
+
+def test_build_ydl_opts_has_resilience_options(tmp_path):
+    opts = main._build_ydl_opts(str(tmp_path), "Song", lambda d: None, "mp3", 192)
+    assert opts["http_chunk_size"] > 0
+    assert opts["retries"] > 0
+    assert opts["fragment_retries"] > 0
+
+
+# ── _resolve_player_clients ──────────────────────────────────────────────────
+def test_resolve_player_clients_filters_known_bad():
+    got = main._resolve_player_clients(
+        {"youtube_player_clients": ["android_vr", "tv", "web", "android"]}
+    )
+    assert got == ["tv", "android"]
+
+
+def test_resolve_player_clients_all_bad_falls_back_to_default():
+    got = main._resolve_player_clients({"youtube_player_clients": ["web", "ios"]})
+    assert got == main.DEFAULT_SETTINGS["youtube_player_clients"]
+
+
+def test_resolve_player_clients_wrong_type_falls_back_to_default():
+    got = main._resolve_player_clients({"youtube_player_clients": "not-a-list"})
+    assert got == main.DEFAULT_SETTINGS["youtube_player_clients"]
+
+
+def test_resolve_player_clients_setting_overrides_default():
+    got = main._resolve_player_clients({"youtube_player_clients": ["mweb"]})
+    assert got == ["mweb"]
+
+
+def test_settings_reset_bad_player_clients_type(tmp_path, monkeypatch):
+    """沿用既有 tolerant load：型別錯誤靜默重設為預設值，不得拋錯。"""
+    settings_file = tmp_path / "settings.json"
+    settings_file.write_text(json.dumps({"youtube_player_clients": 123}), encoding="utf-8")
+    monkeypatch.setattr(main, "SETTINGS_FILE", settings_file)
+    loaded = main.load_settings()
+    assert loaded["youtube_player_clients"] == main.DEFAULT_SETTINGS["youtube_player_clients"]
+
+
+# ── 自動重試（download-retry-backoff）────────────────────────────────────────
+def test_retry_succeeds_after_transient_failure(tmp_path):
+    """暫時性失敗經重試後成功，不得呈現為失敗。"""
+    task_id = "retry-ok"
+    calls = {"n": 0}
+
+    def flaky(_urls):
+        calls["n"] += 1
+        if calls["n"] == 1:
+            raise Exception("HTTP Error 403: Forbidden")
+        return 0
+
+    with patch("yt_dlp.YoutubeDL") as MockYDL:
+        instance = MagicMock()
+        instance.__enter__ = MagicMock(return_value=instance)
+        instance.__exit__ = MagicMock(return_value=False)
+        instance.download = MagicMock(side_effect=flaky)
+        MockYDL.return_value = instance
+
+        main.run_download(
+            SAMPLE_VIDEOS, str(tmp_path), task_id, max_retries=2, retry_backoff=0.5
+        )
+
+    item = main.download_progress[task_id]["items"]["abc123"]
+    assert item["status"] == "done"
+    assert "error" not in item
+    assert calls["n"] == 2
+
+
+def test_retry_reextracts_each_attempt(tmp_path):
+    """每次重試都要重新解析取得新的串流 URL——403 綁在特定 URL 上，
+    重用舊 URL 重試沒有意義。以「每次嘗試都新建 YoutubeDL」代表重新解析。"""
+    task_id = "retry-reextract"
+
+    with patch("yt_dlp.YoutubeDL") as MockYDL:
+        instance = MagicMock()
+        instance.__enter__ = MagicMock(return_value=instance)
+        instance.__exit__ = MagicMock(return_value=False)
+        instance.download = MagicMock(side_effect=Exception("403"))
+        MockYDL.return_value = instance
+
+        main.run_download(
+            SAMPLE_VIDEOS, str(tmp_path), task_id, max_retries=2, retry_backoff=0.01
+        )
+
+    assert MockYDL.call_count == 3  # 1 次原始 + 2 次重試
+
+
+def test_retry_exhausted_marks_error_with_last_message(tmp_path):
+    task_id = "retry-exhausted"
+
+    with patch("yt_dlp.YoutubeDL") as MockYDL:
+        instance = MagicMock()
+        instance.__enter__ = MagicMock(return_value=instance)
+        instance.__exit__ = MagicMock(return_value=False)
+        instance.download = MagicMock(side_effect=Exception("HTTP Error 403: Forbidden"))
+        MockYDL.return_value = instance
+
+        main.run_download(
+            SAMPLE_VIDEOS, str(tmp_path), task_id, max_retries=1, retry_backoff=0.01
+        )
+
+    item = main.download_progress[task_id]["items"]["abc123"]
+    assert item["status"] == "error"
+    assert "403" in item["error"]
+
+
+def test_retry_does_not_fail_sibling_videos(tmp_path):
+    """單支重試不得讓同批其他影片中斷或被誤標為失敗。"""
+    task_id = "retry-siblings"
+    videos = [
+        {"video_id": "bad", "title": "Bad", "url": "https://y/bad"},
+        {"video_id": "good", "title": "Good", "url": "https://y/good"},
+    ]
+
+    def per_url(urls):
+        if "bad" in urls[0]:
+            raise Exception("403")
+        return 0
+
+    with patch("yt_dlp.YoutubeDL") as MockYDL:
+        instance = MagicMock()
+        instance.__enter__ = MagicMock(return_value=instance)
+        instance.__exit__ = MagicMock(return_value=False)
+        instance.download = MagicMock(side_effect=per_url)
+        MockYDL.return_value = instance
+
+        main.run_download(
+            videos, str(tmp_path), task_id, max_retries=1, retry_backoff=0.01
+        )
+
+    items = main.download_progress[task_id]["items"]
+    assert items["bad"]["status"] == "error"
+    assert items["good"]["status"] == "done"
+
+
+def test_retry_records_every_attempt_in_log(tmp_path, monkeypatch):
+    """log 須含每一次嘗試的紀錄，而非只有最後一次。"""
+    import logging
+
+    log_file = tmp_path / "download.log"
+    monkeypatch.setattr(main, "LOG_DIR", tmp_path)
+    monkeypatch.setattr(main, "DOWNLOAD_LOG_FILE", log_file)
+    monkeypatch.setattr(main, "_download_logger", None)
+    # logging.getLogger 是 singleton：既有 handler 仍指向原本的檔案，
+    # 不清掉的話 _get_download_logger() 的 `if not logger.handlers` 會跳過重建。
+    logger = logging.getLogger("yt_mp3.download")
+    old_handlers = logger.handlers[:]
+    for h in old_handlers:
+        logger.removeHandler(h)
+        h.close()
+
+    def _restore():
+        for h in logger.handlers[:]:
+            logger.removeHandler(h)
+            h.close()
+        for h in old_handlers:
+            logger.addHandler(h)
+
+    monkeypatch.setattr(main, "_download_logger", None, raising=False)
+    request_finalizer = _restore
+
+    with patch("yt_dlp.YoutubeDL") as MockYDL:
+        instance = MagicMock()
+        instance.__enter__ = MagicMock(return_value=instance)
+        instance.__exit__ = MagicMock(return_value=False)
+        instance.download = MagicMock(side_effect=Exception("HTTP Error 403"))
+        MockYDL.return_value = instance
+
+        main.run_download(
+            SAMPLE_VIDEOS, str(tmp_path), "log-attempts", max_retries=2, retry_backoff=0.01
+        )
+
+    content = log_file.read_text(encoding="utf-8")
+    for n in (1, 2, 3):
+        assert f"第{n}次" in content
+    assert "403" in content
+
+
+def test_resolve_retry_config_clamps_out_of_range():
+    assert main._resolve_retry_config({"download_retries": 999})[0] == 10
+    assert main._resolve_retry_config({"download_retries": -5})[0] == 0
+    assert main._resolve_retry_config({"download_retry_backoff": "x"})[1] == 2.0
+
+
+# ── PO Token（ytdlp-po-token）────────────────────────────────────────────────
+def test_po_token_passed_when_supplied(tmp_path):
+    opts = main._build_ydl_opts(
+        str(tmp_path), "Song", lambda d: None, "mp3", 192, "", ["tv"], ["mweb.gvs+ABC"]
+    )
+    assert opts["extractor_args"]["youtube"]["po_token"] == ["mweb.gvs+ABC"]
+
+
+def test_po_token_absent_when_not_supplied(tmp_path):
+    opts = main._build_ydl_opts(str(tmp_path), "Song", lambda d: None, "mp3", 192, "", ["tv"], [])
+    assert "po_token" not in opts["extractor_args"]["youtube"]
+
+
+def test_resolve_po_tokens_ignores_malformed():
+    got = main._resolve_po_tokens(
+        {"youtube_po_tokens": ["mweb.gvs+ABC", "no-plus-sign", "", 123]}
+    )
+    assert got == ["mweb.gvs+ABC"]
+
+
+def test_resolve_po_tokens_wrong_type_is_empty():
+    assert main._resolve_po_tokens({"youtube_po_tokens": "nope"}) == []
+
+
+def test_missing_po_token_does_not_fail_batch(tmp_path):
+    """缺 PO Token 是降級不是失敗：批次仍應全部完成。"""
+    task_id = "po-degrade"
+    videos = [
+        {"video_id": "a", "title": "A", "url": "https://y/a"},
+        {"video_id": "b", "title": "B", "url": "https://y/b"},
+    ]
+    with patch("yt_dlp.YoutubeDL") as MockYDL:
+        instance = MagicMock()
+        instance.__enter__ = MagicMock(return_value=instance)
+        instance.__exit__ = MagicMock(return_value=False)
+        instance.download = MagicMock(return_value=0)
+        MockYDL.return_value = instance
+
+        main.run_download(videos, str(tmp_path), task_id, po_tokens=[])
+
+    items = main.download_progress[task_id]["items"]
+    assert all(i["status"] == "done" for i in items.values())

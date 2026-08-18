@@ -6,6 +6,7 @@ import { snap, extractCss } from './snap'
 
 vi.mock('@/api', () => ({
   apiGet: vi.fn(),
+  apiPost: vi.fn(),
   apiPut: vi.fn(),
   apiDelete: vi.fn(),
 }))
@@ -320,5 +321,69 @@ describe('SettingsView 訂閱頻道健檢', () => {
 
     expect(apiDelete).not.toHaveBeenCalled()
     expect(wrapper.findAll('[data-testid="problem-row"]')).toHaveLength(2)
+  })
+})
+
+// ── 下載元件版本管理（download-403-resilience）───────────────────────────────
+describe('SettingsView 下載元件分頁', () => {
+  beforeEach(() => {
+    setActivePinia(createPinia())
+    vi.clearAllMocks()
+  })
+
+  async function mountPanel(info: any) {
+    const { apiGet } = await import('@/api')
+    vi.mocked(apiGet).mockImplementation(async (path: string) => {
+      if (path === '/settings') return FAKE_SETTINGS as any
+      if (path === '/ytdlp/version') return info as any
+      return {} as any
+    })
+    const wrapper = mount(SettingsView)
+    await flushPromises()
+    await wrapper.find('[data-testid="tab-ytdlp"]').trigger('click')
+    return wrapper
+  }
+
+  it('顯示生效版本與來源', async () => {
+    const wrapper = await mountPanel({
+      yt_dlp: '2026.07.04', yt_dlp_ejs: '0.8.0',
+      source: 'managed', js_runtime: 'C:\app\deno.exe',
+    })
+    const text = wrapper.find('[data-testid="ytdlp-versions"]').text()
+    expect(text).toContain('2026.07.04')
+    expect(text).toContain('0.8.0')
+    expect(text).toContain('受管版本')
+  })
+
+  it('內建版本時不顯示回退按鈕', async () => {
+    const wrapper = await mountPanel({
+      yt_dlp: '2026.07.04', yt_dlp_ejs: '0.8.0',
+      source: 'bundled', js_runtime: 'C:\app\deno.exe',
+    })
+    expect(wrapper.find('[data-testid="ytdlp-revert"]').exists()).toBe(false)
+  })
+
+  it('缺 JS runtime 時明確標示會失敗', async () => {
+    const wrapper = await mountPanel({
+      yt_dlp: '2026.07.04', yt_dlp_ejs: null, source: 'bundled', js_runtime: null,
+    })
+    expect(wrapper.find('[data-testid="ytdlp-versions"]').text()).toContain('下載很可能失敗')
+  })
+
+  it('離線查詢時降級顯示訊息而非壞掉', async () => {
+    const wrapper = await mountPanel({
+      yt_dlp: '2026.07.04', yt_dlp_ejs: '0.8.0', source: 'bundled', js_runtime: 'x',
+    })
+    const { apiGet } = await import('@/api')
+    vi.mocked(apiGet).mockImplementation(async (path: string) => {
+      if (path === '/ytdlp/latest') return { available: false, error: '無法查詢上游版本' } as any
+      return {} as any
+    })
+
+    await wrapper.find('[data-testid="ytdlp-check"]').trigger('click')
+    await flushPromises()
+
+    expect(wrapper.find('[data-testid="ytdlp-offline"]').text()).toContain('無法查詢')
+    expect(wrapper.find('[data-testid="ytdlp-update"]').exists()).toBe(false)
   })
 })

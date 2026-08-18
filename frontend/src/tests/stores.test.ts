@@ -80,6 +80,16 @@ describe('authStore', () => {
     await auth.login()
     expect(apiGet).toHaveBeenCalledWith('/auth/login')
   })
+
+  it('loginDrive：呼叫 GET /auth/login/drive（Drive 獨立授權端點）', async () => {
+    // drive.file 與 youtube 不可在同一 OAuth 請求混用，loginDrive 使用獨立端點
+    const { apiGet } = await import('@/api')
+    vi.mocked(apiGet).mockResolvedValue({})
+
+    const auth = useAuthStore()
+    await auth.loginDrive()
+    expect(apiGet).toHaveBeenCalledWith('/auth/login/drive')
+  })
 })
 
 describe('downloadStore resilient resume persistence', () => {

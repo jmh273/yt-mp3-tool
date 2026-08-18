@@ -78,19 +78,33 @@
 - **WHEN** 使用者未變更設定即上傳
 - **THEN** 系統 SHALL 使用預設根目錄 `YT-MP3`
 
-### Requirement: Drive 上傳採 drive.file 權限與重新授權
+### Requirement: Drive 採獨立兩階段授權（與 YouTube scope 分離）
 
-系統 SHALL 使用 Google `drive.file` scope 進行上傳(僅能存取 app 自建的檔案,最小權限)。因 scope 由原本僅 YouTube 變更,現有帳號的既有授權 SHALL 失效並需重新同意一次;系統 SHALL 在使用者首次使用上傳功能而授權不足時,引導完成一次性重新授權,並於 UI 說明此為正常的一次性流程。
+Google 不允許在同一個 OAuth 請求中混合使用 `youtube`（restricted scope）與 `drive.file`（sensitive scope）。因此系統 SHALL 將兩者拆為**兩次獨立授權**：
 
-#### Scenario: 首次上傳觸發重新授權
+- **第一階段（YouTube 登入）**：`GET /auth/login` 僅申請 `youtube`、`userinfo.email`、`openid`，token 存於 `tokens/<email>.json`。
+- **第二階段（Drive 授權）**：`GET /auth/login/drive` 僅申請 `drive.file`、`userinfo.email`、`openid`，token 存於 `tokens/<email>_drive.json`，與 YouTube token 分離，互不影響。
 
-- **WHEN** 既有帳號(僅有 YouTube 授權)首次按下上傳
-- **THEN** 系統 SHALL 引導使用者完成包含 `drive.file` 的重新授權,並在成功後繼續上傳
+系統 SHALL 使用最小權限 `drive.file` scope（僅能存取 app 自建的檔案）。Drive 授權 SHALL 要求使用者使用與目前 YouTube 登入帳號**相同**的 Google 帳號；若帳號不一致，系統 SHALL 拒絕儲存 Drive token 並於 log 說明原因。
 
-#### Scenario: 已授權則直接上傳
+#### Scenario: 首次上傳觸發 Drive 授權引導
 
-- **WHEN** 帳號已具備 `drive.file` 授權
-- **THEN** 系統 SHALL 直接進行上傳,不再要求重新授權
+- **WHEN** 帳號已完成 YouTube 登入但尚未進行 Drive 授權，使用者按下上傳
+- **THEN** 系統 SHALL 引導使用者點擊「重新授權」，觸發 `GET /auth/login/drive`，開啟瀏覽器讓使用者同意 `drive.file` scope
+- **AND** 完成後使用者再次按下上傳，系統 SHALL 直接進行上傳，不再要求授權
+
+#### Scenario: 已完成 Drive 授權則直接上傳
+
+- **WHEN** 帳號已具備有效的 Drive token（`<email>_drive.json`）
+- **THEN** 系統 SHALL 直接進行上傳，不再彈出授權視窗
+
+#### Scenario: Drive 授權帳號必須與 YouTube 登入帳號一致
+
+- **WHEN** 使用者在 Drive 授權視窗選擇了與目前 YouTube 登入帳號**不同**的 Google 帳號
+- **THEN** 系統 SHALL 拒絕儲存該 Drive token，不覆蓋既有 token
+- **AND** 系統 SHALL 於 log 說明帳號不一致，使用者可重新觸發授權並選擇正確帳號
+
+
 
 ### Requirement: 上傳進度與失敗回報
 

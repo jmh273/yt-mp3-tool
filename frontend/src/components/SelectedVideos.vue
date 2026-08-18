@@ -99,7 +99,14 @@
           <span v-if="item.status === 'downloading'">
             {{ item.percent }}% <span v-if="item.speed">({{ item.speed }})</span>
           </span>
+          <span v-else-if="item.status === 'retrying' && item.attempt">
+            （第 {{ item.attempt }} 次）
+          </span>
         </span>
+        <!-- 失敗原因：不顯示的話使用者得翻 console 才知道是暫時性問題還是要處理的問題 -->
+        <p v-if="item.status === 'error' && item.error" class="item-error">
+          {{ item.error }}
+        </p>
       </div>
     </div>
 
@@ -267,7 +274,10 @@ const errorCount = computed(() => Object.values(download.progress).filter((i) =>
 const hasProgress = computed(() => Object.keys(download.progress).length > 0)
 
 function statusLabel(status: string) {
-  return { pending: '等待中', downloading: '下載中', converting: '轉換中', done: '完成', error: '失敗' }[status] ?? status
+  return {
+    pending: '等待中', downloading: '下載中', converting: '轉換中',
+    retrying: '重試中', done: '完成', error: '失敗',
+  }[status] ?? status
 }
 </script>
 
@@ -314,6 +324,8 @@ button:disabled { opacity: 0.5; cursor: not-allowed; }
 .bar { height: 100%; border-radius: 4px; background: #4caf50; transition: width 0.3s; }
 .bar.error { background: #f44336; }
 .bar.converting { background: #ff9800; }
+.bar.retrying { background: #ff9800; }
+.item-error { color: #c00; font-size: 0.74rem; margin: 0.15rem 0 0; word-break: break-word; }
 .pstatus { font-size: 0.75rem; color: #666; text-align: right; }
 .summary { margin-top: 1rem; color: #4caf50; font-size: 0.9rem; font-weight: bold; }
 </style>

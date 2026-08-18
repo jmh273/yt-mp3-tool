@@ -9,14 +9,14 @@ REM      Override by setting VERSION env var (CI passes the tag explicitly).
 REM   2. Build frontend SPA (npm run build -> frontend/dist/)
 REM   3. Stage SPA into backend/static/
 REM   4. Run PyInstaller (yt-mp3-tool.spec -> backend/dist/yt-mp3-tool/)
-REM   5. Stage ffmpeg.exe + mp3gain.exe + THIRD-PARTY-NOTICES.txt + update.bat
+REM   5. Stage ffmpeg.exe + mp3gain.exe + deno.exe + THIRD-PARTY-NOTICES.txt + update.bat
 REM   6. Zip -> dist/yt-mp3-tool-v<VERSION>-windows-x64.zip
 REM
 REM NOTE: client_secret.json is NOT bundled — self-hosters supply their own.
 REM       The build fails if any client_secret.json sneaks into the zip.
 REM
 REM Required tools on PATH: git, node, npm, python (with pyinstaller installed)
-REM Required files in tools/: ffmpeg.exe, mp3gain.exe
+REM Required files in tools/: ffmpeg.exe, mp3gain.exe, deno.exe
 REM ============================================================================
 
 cd /d "%~dp0\.."
@@ -46,10 +46,10 @@ echo [build] VERSION=!VERSION!
 REM --- 2. Verify required bundled tools -----------------------------------------
 REM client_secret.json is intentionally NOT required — open-source releases ship
 REM without it, and self-hosters drop in their own next to the exe.
-for %%F in (ffmpeg.exe mp3gain.exe) do (
+for %%F in (ffmpeg.exe mp3gain.exe deno.exe) do (
     if not exist "%TOOLS%\%%F" (
         echo [build] ERROR: missing %TOOLS%\%%F
-        echo [build] Place ffmpeg.exe and mp3gain.exe in tools/ before building.
+        echo [build] Place ffmpeg.exe, mp3gain.exe and deno.exe in tools/ before building.
         exit /b 1
     )
 )
@@ -82,6 +82,8 @@ REM --- 5. Stage extras into the bundle ----------------------------------------
 echo [build] Staging extras...
 copy /y "%TOOLS%\ffmpeg.exe"          "%BUNDLE%\" >nul || exit /b 1
 copy /y "%TOOLS%\mp3gain.exe"         "%BUNDLE%\" >nul || exit /b 1
+REM deno 是 yt-dlp 解 YouTube nsig challenge 的 JS runtime；缺了下載會全面 403。
+copy /y "%TOOLS%\deno.exe"            "%BUNDLE%\" >nul || exit /b 1
 copy /y "%REPO_ROOT%\scripts\update.bat" "%BUNDLE%\" >nul || exit /b 1
 if exist "%REPO_ROOT%\THIRD-PARTY-NOTICES.txt" (
     copy /y "%REPO_ROOT%\THIRD-PARTY-NOTICES.txt" "%BUNDLE%\" >nul || exit /b 1

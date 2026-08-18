@@ -8,6 +8,10 @@ on:
 permissions:
   contents: write   # 需要建立 release
 
+env:
+  # yt-dlp 解 nsig challenge 用的 JS runtime。明確釘選，升版須人工調整。
+  DENO_VERSION: "2.9.5"
+
 jobs:
   build:
     runs-on: windows-latest
@@ -62,6 +66,31 @@ jobs:
           New-Item -ItemType Directory -Path tools -Force | Out-Null
           Copy-Item $ffmpeg.FullName -Destination tools\ffmpeg.exe -Force
           Write-Host "ffmpeg.exe size: $((Get-Item tools\ffmpeg.exe).Length) bytes"
+
+      # deno 提供 yt-dlp 解 YouTube nsig challenge 所需的 JS runtime。
+      # 版本明確釘選：ffmpeg 抓 master-latest 的做法不適用於此——runtime 回歸會直接
+      # 讓下載全面失敗，不能接受每月無聲換版。升版需人工改這裡。
+      - name: Cache deno
+        id: cache-deno
+        uses: actions/cache@v4
+        with:
+          path: tools/deno.exe
+          key: deno-${{ env.DENO_VERSION }}
+
+      - name: Download deno (pinned)
+        if: steps.cache-deno.outputs.cache-hit != 'true'
+        shell: pwsh
+        run: |
+          $url = "https://github.com/denoland/deno/releases/download/v$env:DENO_VERSION/deno-x86_64-pc-windows-msvc.zip"
+          $zip = "$env:RUNNER_TEMP\deno.zip"
+          $extract = "$env:RUNNER_TEMP\deno-extract"
+          Invoke-WebRequest -Uri $url -OutFile $zip -UseBasicParsing
+          Expand-Archive -Path $zip -DestinationPath $extract -Force
+          $deno = Get-ChildItem -Path $extract -Recurse -Filter deno.exe | Select-Object -First 1
+          if (-not $deno) { throw "deno.exe not found in release zip" }
+          New-Item -ItemType Directory -Path tools -Force | Out-Null
+          Copy-Item $deno.FullName -Destination tools\deno.exe -Force
+          Write-Host "deno.exe size: $((Get-Item tools\deno.exe).Length) bytes"
 
       - name: Cache mp3gain
         id: cache-mp3gain

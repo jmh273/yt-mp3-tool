@@ -5,8 +5,15 @@ import pathlib
 import re
 import shutil
 import sys
+import time
 from contextlib import asynccontextmanager
 from typing import AsyncGenerator
+
+# 受管 yt-dlp 必須在 import yt_dlp 之前掛上 finder，否則會先載到內建版本而無法覆蓋。
+# 受管版本不存在或損毀時，activate 會自動退回內建版本。
+from ytdlp_loader import activate_managed_ytdlp
+
+activate_managed_ytdlp()
 
 import aiohttp
 import yt_dlp
@@ -59,6 +66,46 @@ def _setup_bundled_path() -> None:
 _setup_bundled_path()
 
 
+# ── JavaScript runtime（yt-dlp 解 YouTube nsig challenge 用） ──────────────────
+# yt-dlp 需要真正的 JS runtime 才能解開 YouTube 的 n challenge；缺了它產出的媒體
+# URL 會被 YouTube 拒絕（HTTP 403），下載全面失敗。runtime 隨發行版散布，路徑明確
+# 指定而不依賴使用者 PATH——否則機器上剛好有的其他版本會被誤用。
+_JS_RUNTIME_NAME = "deno.exe" if os.name == "nt" else "deno"
+
+
+def _js_runtime_path() -> pathlib.Path | None:
+    """回傳隨程式散布的 JS runtime 路徑；找不到回 None。
+
+    Frozen：與 exe 同目錄（build.bat 把 deno.exe 複製到 bundle 根目錄）。
+    Dev：repo 的 tools/（與 ffmpeg.exe / mp3gain.exe 同一個位置）。
+    """
+    if _is_frozen():
+        candidate = pathlib.Path(sys.executable).parent / _JS_RUNTIME_NAME
+    else:
+        candidate = pathlib.Path(__file__).parent.parent / "tools" / _JS_RUNTIME_NAME
+    return candidate if candidate.is_file() else None
+
+
+def _check_js_runtime() -> None:
+    """啟動時檢查 runtime 是否可用。不可用時明確告警，不要無聲降級——
+    否則使用者只會在下載階段看到難以理解的 403。"""
+    path = _js_runtime_path()
+    if path is None:
+        print(
+            f"[JS] 警告：找不到 {_JS_RUNTIME_NAME}。yt-dlp 將無法解開 YouTube 的 "
+            f"nsig challenge，下載很可能全面失敗（HTTP 403）。",
+            flush=True,
+        )
+        return
+    if not os.access(path, os.X_OK):
+        print(f"[JS] 警告：{path} 存在但無法執行。下載很可能失敗。", flush=True)
+        return
+    print(f"[JS] JavaScript runtime: {path}", flush=True)
+
+
+_check_js_runtime()
+
+
 def _find_client_secret() -> pathlib.Path | None:
     """Look for client_secret.json next to the exe (bundle) first, then under backend/ (dev)."""
     bundle_loc = _resource_path("client_secret.json")
@@ -78,13 +125,19 @@ CURRENT_ACCOUNT_FILE = CONFIG_DIR / "current_account.txt"
 SETTINGS_FILE = CONFIG_DIR / "settings.json"
 DISCOVERY_PROFILES_DIR = CONFIG_DIR / "discovery_profiles"  # 同類新頻道 profile 永續快取
 
+# 基本登入 scope：YouTube + email（drive.file 不可與 youtube 混用，需分開授權）
 SCOPES = [
     "https://www.googleapis.com/auth/youtube",
-    "https://www.googleapis.com/auth/drive.file",
     "https://www.googleapis.com/auth/userinfo.email",
     "openid",
 ]
+# Drive 需要時單獨做 incremental authorization
 DRIVE_FILE_SCOPE = "https://www.googleapis.com/auth/drive.file"
+DRIVE_SCOPES = [
+    DRIVE_FILE_SCOPE,
+    "https://www.googleapis.com/auth/userinfo.email",
+    "openid",
+]
 REDIRECT_URI = "http://localhost:8000/auth/callback"
 
 DEFAULT_SETTINGS = {
@@ -98,6 +151,15 @@ DEFAULT_SETTINGS = {
     "drive_root_folder": "YT-MP3",
     "download_concurrency": 3,
     "drive_upload_concurrency": 3,
+    # YouTube player client 優先序。yt-dlp 的預設選擇會落到 android_vr 並回 403，
+    # 必須明確指定。可經設定覆寫，讓 YouTube 換封鎖對象時不必重新發版。
+    "youtube_player_clients": ["tv", "android", "mweb", "tv_simply"],
+    # GVS PO Token。缺少時 YouTube 不提供 audio-only 格式，只能退而下載
+    # progressive 影片再抽音軌（音質較低、流量較大）。格式為 yt-dlp 的
+    # "<client>.gvs+<token>"，例如 "mweb.gvs+XXXX"。目前無法自動取得，需手動填入。
+    "youtube_po_tokens": [],
+    "download_retries": 3,
+    "download_retry_backoff": 2.0,
     "quota_used": 0,
     "quota_date": "",
 }
@@ -110,6 +172,74 @@ MP3GAIN_REFERENCE_DB = 89.0  # mp3gain default target = ReplayGain reference
 CONFIG_DIR.mkdir(exist_ok=True)
 TOKENS_DIR.mkdir(exist_ok=True)
 DISCOVERY_PROFILES_DIR.mkdir(exist_ok=True)
+
+
+# ── 下載診斷 log ──────────────────────────────────────────────────────────────
+# yt-dlp 的警告是判斷失敗根因的主要依據，但 console 視窗一關就沒了。寫進檔案，
+# 讓故障在事後仍可追查，並讓每一次重試嘗試都留下紀錄而非只有最後一次。
+LOG_DIR = CONFIG_DIR / "logs"
+DOWNLOAD_LOG_FILE = LOG_DIR / "download.log"
+
+_download_logger: "logging.Logger | None" = None
+
+
+def _get_download_logger() -> "logging.Logger":
+    global _download_logger
+    if _download_logger is not None:
+        return _download_logger
+
+    import logging
+    from logging.handlers import RotatingFileHandler
+
+    logger = logging.getLogger("yt_mp3.download")
+    logger.setLevel(logging.INFO)
+    logger.propagate = False
+    if not logger.handlers:
+        try:
+            LOG_DIR.mkdir(parents=True, exist_ok=True)
+            handler = RotatingFileHandler(
+                DOWNLOAD_LOG_FILE, maxBytes=2_000_000, backupCount=3, encoding="utf-8"
+            )
+            handler.setFormatter(
+                logging.Formatter("%(asctime)s %(levelname)-7s %(message)s")
+            )
+            logger.addHandler(handler)
+        except OSError:
+            # 無法寫 log 不該讓下載失敗
+            logger.addHandler(logging.NullHandler())
+    _download_logger = logger
+    return logger
+
+
+class _YdlLogger:
+    """把 yt-dlp 的輸出導向下載 log，並標註是哪支影片的第幾次嘗試。
+
+    yt-dlp 會把 info 級訊息也送到 debug()，因此 debug 只在訊息看起來像警告時才記，
+    避免把逐秒的進度輸出灌進檔案。"""
+
+    def __init__(self, video_id: str, attempt: int):
+        self._prefix = f"[{video_id} 第{attempt}次] "
+        self._log = _get_download_logger()
+
+    def debug(self, msg):
+        text = str(msg)
+        if text.startswith("[debug] "):
+            return
+        if "WARNING" in text or "ERROR" in text:
+            self._log.warning(self._prefix + text)
+
+    def info(self, msg):
+        pass  # 逐項進度不入檔，避免淹沒真正的診斷訊息
+
+    def warning(self, msg):
+        self._log.warning(self._prefix + str(msg))
+
+    def error(self, msg):
+        self._log.error(self._prefix + str(msg))
+
+
+def log_download_failure(video_id: str, attempt: int, message: str) -> None:
+    _get_download_logger().error(f"[{video_id} 第{attempt}次] 失敗：{message}")
 
 
 def _read_version() -> str:
@@ -298,6 +428,10 @@ _SETTINGS_RANGES = {
     "normalize_target_db": ((int, float), 80.0, 100.0),
     "output_path": (str, None, None),
     "drive_root_folder": (str, None, None),
+    "youtube_player_clients": (list, None, None),
+    "youtube_po_tokens": (list, None, None),
+    "download_retries": (int, 0, 10),
+    "download_retry_backoff": ((int, float), 0.5, 60.0),
 }
 
 
@@ -479,21 +613,34 @@ def load_drive_credentials() -> Credentials | None:
     email = _get_current_email()
     if not email:
         return None
-    token_file = _token_path(email)
-    if not token_file.exists():
+    # Drive token 存在獨立的 <email>_drive.json，與 YouTube token 分開
+    drive_token_file = _token_path(email).with_name(f"{email}_drive.json")
+    if not drive_token_file.exists():
+        # 向下相容：舊版 token 可能把 drive.file 存在主 token 檔
+        token_file = _token_path(email)
+        if token_file.exists():
+            creds = Credentials.from_authorized_user_file(str(token_file))
+            if _credential_has_scope(creds, DRIVE_FILE_SCOPE):
+                # 舊版 token 含 drive.file，直接使用（下次授權後會移至獨立檔）
+                if creds and creds.expired and creds.refresh_token:
+                    try:
+                        creds.refresh(GoogleRequest())
+                        token_file.write_text(creds.to_json(), encoding="utf-8")
+                    except RefreshError:
+                        return None
+                return creds if creds and creds.valid else None
         return None
-    creds = Credentials.from_authorized_user_file(str(token_file))
-    # 缺 drive.file scope：回 None 觸發 401，由前端引導重新授權。
-    # 不要動既有 token——它與 YouTube 共用，刪掉會把使用者整個登出。
+    creds = Credentials.from_authorized_user_file(str(drive_token_file))
     if not _credential_has_scope(creds, DRIVE_FILE_SCOPE):
         return None
     if creds and creds.expired and creds.refresh_token:
         try:
             creds.refresh(GoogleRequest())
-            token_file.write_text(creds.to_json(), encoding="utf-8")
+            drive_token_file.write_text(creds.to_json(), encoding="utf-8")
         except RefreshError:
             return None
     return creds if creds and creds.valid else None
+
 
 
 def require_drive_credentials() -> Credentials:
@@ -602,9 +749,64 @@ def auth_login():
     return {"message": "已開啟瀏覽器，請完成授權，授權完成後重新整理頁面"}
 
 
+
 @app.get("/auth/callback")
 def auth_callback():
     return {"message": "callback received"}
+
+
+@app.get("/auth/login/drive")
+def auth_login_drive():
+    """
+    Drive 功能的獨立授權端點（incremental authorization）。
+    Google 不允許 youtube + drive.file 在同一個 OAuth 請求中混合，
+    所以 Drive scope 需要單獨一次授權，token 存在獨立的 drive_token.json。
+    """
+    client_secret = _find_client_secret()
+    if client_secret is None:
+        raise HTTPException(status_code=500, detail="找不到 client_secret.json")
+
+    def _do_drive_oauth():
+        try:
+            print("[Drive OAuth] 開始 Drive 授權流程...", flush=True)
+            flow = InstalledAppFlow.from_client_secrets_file(
+                str(client_secret), scopes=DRIVE_SCOPES
+            )
+            creds = flow.run_local_server(
+                port=0,
+                open_browser=True,
+                prompt="select_account",
+                access_type="offline",
+            )
+            # 取得 email 並確認與目前登入帳號一致（防止跨帳號 token 錯位）
+            try:
+                drive_email = _fetch_email(creds)
+            except Exception as e:
+                print(f"[Drive OAuth] 無法取得 Drive 授權帳號 email（{e}），中止", flush=True)
+                return
+            current_email = _get_current_email()
+            if current_email and drive_email != current_email:
+                print(
+                    f"[Drive OAuth] 帳號不一致：Drive 授權帳號為 {drive_email}，"
+                    f"但目前登入帳號為 {current_email}。"
+                    "請使用相同 Google 帳號完成 Drive 授權。",
+                    flush=True,
+                )
+                return
+            # 存入 tokens/<email>_drive.json
+            drive_token_file = _token_path(drive_email).with_name(f"{drive_email}_drive.json")
+            drive_token_file.write_text(creds.to_json(), encoding="utf-8")
+            print(f"[Drive OAuth] Drive 授權完成，token 已存入 {drive_token_file}", flush=True)
+        except Exception as e:
+            import traceback
+            print(f"[Drive OAuth] 授權流程失敗：{e}", flush=True)
+            traceback.print_exc()
+
+
+    import threading
+    t = threading.Thread(target=_do_drive_oauth, daemon=True)
+    t.start()
+    return {"message": "已開啟瀏覽器，請完成 Drive 授權，完成後可使用上傳功能"}
 
 
 class LogoutRequest(BaseModel):
@@ -2472,13 +2674,43 @@ def _compute_seq_prefix(start_seq: str | None, default_next: int, idx: int) -> s
     return f"{n:0{width}d}_"
 
 
-def _build_ydl_opts(output_path: str, safe_title: str, hook, fmt: str, quality: int, seq_prefix: str = "") -> dict:
+def _build_ydl_opts(
+    output_path: str,
+    safe_title: str,
+    hook,
+    fmt: str,
+    quality: int,
+    seq_prefix: str = "",
+    player_clients: list[str] | None = None,
+    po_tokens: list[str] | None = None,
+) -> dict:
     base = {
         "outtmpl": os.path.join(output_path, f"{seq_prefix}{safe_title}.%(ext)s"),
         "progress_hooks": [hook],
         "quiet": True,
-        "no_warnings": True,
+        # 刻意「不」設 no_warnings：yt-dlp 的警告是判斷失敗根因的主要依據
+        # （缺 JS runtime、n challenge 解算失敗都只出現在警告裡）。壓掉它會讓
+        # 下一次同類故障重新變成數小時的盲猜。
+        # 分塊下載：googlevideo 對長連線的節流是已知問題，分塊可降低中途被斷的機率。
+        "http_chunk_size": 10 * 1024 * 1024,
+        "retries": 10,
+        "fragment_retries": 10,
     }
+
+    # JS runtime：yt-dlp 解 nsig challenge 必要。明確指定路徑，不依賴 PATH。
+    # 結構為 {runtime: {config}}——Python API 與 CLI 的 "deno:PATH" 字串形式不同。
+    runtime = _js_runtime_path()
+    if runtime is not None:
+        base["js_runtimes"] = {"deno": {"path": str(runtime)}}
+
+    # player client：預設選擇會落到 android_vr 並回 403，必須明確指定。
+    clients = player_clients or list(DEFAULT_SETTINGS["youtube_player_clients"])
+    yt_args: dict[str, list[str]] = {"player_client": clients}
+    # PO Token 有提供才帶。沒有的話 yt-dlp 會自動跳過需要它的格式並退回
+    # progressive——可下載但音質較低，這是刻意的降級而非失敗。
+    if po_tokens:
+        yt_args["po_token"] = list(po_tokens)
+    base["extractor_args"] = {"youtube": yt_args}
     if fmt == "mp4":
         return {
             **base,
@@ -2498,6 +2730,45 @@ def _build_ydl_opts(output_path: str, safe_title: str, hook, fmt: str, quality: 
             "preferredquality": str(quality),
         }],
     }
+
+
+# 實測（乾淨網路、官方 yt-dlp + deno）：tv / android / mweb / tv_simply 可下載；
+# android_vr 拿得到 URL 但一律 403；web / ios / web_safari 只回圖片（需 PO Token）。
+_BLOCKED_PLAYER_CLIENTS = frozenset({"android_vr", "web", "ios", "web_safari"})
+
+
+def _resolve_player_clients(settings: dict) -> list[str]:
+    """讀取 player client 優先序，濾掉已知失效者；結果為空時退回預設。"""
+    raw = settings.get("youtube_player_clients")
+    if not isinstance(raw, list):
+        raw = DEFAULT_SETTINGS["youtube_player_clients"]
+    clients = [
+        c.strip()
+        for c in raw
+        if isinstance(c, str) and c.strip() and c.strip() not in _BLOCKED_PLAYER_CLIENTS
+    ]
+    return clients or list(DEFAULT_SETTINGS["youtube_player_clients"])
+
+
+def _resolve_po_tokens(settings: dict) -> list[str]:
+    """讀取使用者提供的 GVS PO Token。格式不合的項目直接忽略，不讓設定錯誤中斷下載。"""
+    raw = settings.get("youtube_po_tokens")
+    if not isinstance(raw, list):
+        return []
+    return [t.strip() for t in raw if isinstance(t, str) and "+" in t and t.strip()]
+
+
+def _resolve_retry_config(settings: dict) -> tuple[int, float]:
+    """回傳 (最大重試次數, 退避基數秒)。沿用既有的容錯：值不合法即退回預設。"""
+    try:
+        retries = max(0, min(10, int(settings.get("download_retries", 3))))
+    except (TypeError, ValueError):
+        retries = 3
+    try:
+        backoff = max(0.5, min(60.0, float(settings.get("download_retry_backoff", 2.0))))
+    except (TypeError, ValueError):
+        backoff = 2.0
+    return retries, backoff
 
 
 def _resolve_concurrency(settings: dict) -> int:
@@ -2527,6 +2798,10 @@ def run_download(
     seq_enabled: bool = True,
     start_seq: str | None = None,
     concurrency: int = 1,
+    player_clients: list[str] | None = None,
+    po_tokens: list[str] | None = None,
+    max_retries: int = 3,
+    retry_backoff: float = 2.0,
 ):
     download_progress[task_id] = {"status": "running", "items": {}}
 
@@ -2561,14 +2836,41 @@ def run_download(
         safe_title = _sanitize_filename(v.get("title", ""))
         # 序號前綴依批次內 idx 計算，與完成順序解耦 → 並行下檔名編號仍正確
         seq_prefix = _compute_seq_prefix(start_seq, default_next, idx) if seq_enabled else ""
-        ydl_opts = _build_ydl_opts(output_path, safe_title, make_hook(vid), fmt, quality, seq_prefix)
-        try:
-            with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-                ydl.download([v["url"]])
-            download_progress[task_id]["items"][vid]["status"] = "done"
-        except Exception as e:
-            download_progress[task_id]["items"][vid]["status"] = "error"
-            download_progress[task_id]["items"][vid]["error"] = str(e)
+        item = download_progress[task_id]["items"][vid]
+
+        # 每次嘗試都重新建立 YoutubeDL 並重跑 download()，因而重新解析取得新的串流
+        # URL。403 通常綁在特定一次解析的 URL 上，重用舊 URL 重試沒有意義。
+        #
+        # 退避等待發生在 semaphore 名額之內（並行模式下）。評估後接受此代價：
+        # 預設最壞情況約 14 秒，換取序列與並行兩條路徑共用同一份重試邏輯。
+        # 其他影片不會因此被中斷或誤標為失敗，僅是開始時間可能後延。
+        last_error = "未知錯誤"
+        for attempt in range(1, max_retries + 2):
+            ydl_opts = _build_ydl_opts(
+                output_path, safe_title, make_hook(vid), fmt, quality, seq_prefix,
+                player_clients, po_tokens,
+            )
+            ydl_opts["logger"] = _YdlLogger(vid, attempt)
+            try:
+                with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+                    ydl.download([v["url"]])
+                item["status"] = "done"
+                item.pop("error", None)
+                item.pop("attempt", None)
+                return
+            except Exception as e:
+                last_error = str(e)
+                log_download_failure(vid, attempt, last_error)
+                if attempt > max_retries:
+                    break
+                item["status"] = "retrying"
+                item["attempt"] = attempt
+                item["error"] = last_error
+                time.sleep(retry_backoff * (2 ** (attempt - 1)))
+
+        item["status"] = "error"
+        item["error"] = last_error
+        item["attempt"] = max_retries + 1
 
     if concurrency <= 1 or len(videos) <= 1:
         for idx, v in enumerate(videos):
@@ -2605,6 +2907,9 @@ async def start_download(body: DownloadRequest):
 
     fmt, quality = _normalize_format_quality(body.format, body.quality)
     concurrency = _resolve_concurrency(settings)
+    player_clients = _resolve_player_clients(settings)
+    po_tokens = _resolve_po_tokens(settings)
+    max_retries, retry_backoff = _resolve_retry_config(settings)
 
     loop = asyncio.get_event_loop()
     loop.run_in_executor(
@@ -2618,6 +2923,10 @@ async def start_download(body: DownloadRequest):
         body.seq_enabled,
         body.start_seq,
         concurrency,
+        player_clients,
+        po_tokens,
+        max_retries,
+        retry_backoff,
     )
 
     return {"task_id": task_id, "directory": str(final_output_path.resolve())}
@@ -3171,6 +3480,65 @@ async def drive_upload_folders():
 @app.get("/version")
 def version():
     return {"version": __version__}
+
+
+# ── yt-dlp 版本管理 ───────────────────────────────────────────────────────────
+def _installed_ejs_version() -> str | None:
+    try:
+        import importlib.metadata as _md
+
+        return _md.version("yt-dlp-ejs")
+    except Exception:
+        return None
+
+
+@app.get("/ytdlp/version")
+def ytdlp_version():
+    """目前生效的 yt-dlp / EJS solver 版本與來源（受管或內建）。"""
+    import ytdlp_loader
+
+    return {
+        "yt_dlp": yt_dlp.version.__version__,
+        "yt_dlp_ejs": _installed_ejs_version(),
+        "source": ytdlp_loader.active_source(),
+        "js_runtime": str(_js_runtime_path()) if _js_runtime_path() else None,
+    }
+
+
+@app.get("/ytdlp/latest")
+def ytdlp_latest():
+    """查詢上游最新版。離線時降級為「無法查詢」，不得讓既有安裝進入不可用狀態。"""
+    import ytdlp_loader
+
+    try:
+        return {"available": True, "versions": ytdlp_loader.latest_versions()}
+    except Exception as e:
+        return {"available": False, "error": f"無法查詢上游版本：{e}"}
+
+
+@app.post("/ytdlp/update")
+def ytdlp_update():
+    """下載並安裝最新的 yt-dlp + EJS solver（成組更新）。需重新啟動才會生效。"""
+    import ytdlp_loader
+
+    try:
+        installed = ytdlp_loader.install_managed()
+    except Exception as e:
+        raise HTTPException(status_code=502, detail=f"更新失敗，維持目前版本：{e}")
+    return {
+        "installed": installed,
+        "restart_required": True,
+        "message": "更新完成，重新啟動程式後生效。",
+    }
+
+
+@app.post("/ytdlp/revert")
+def ytdlp_revert():
+    """移除受管版本，回退到發行版內建版本。需重新啟動才會生效。"""
+    import ytdlp_loader
+
+    ytdlp_loader.revert_to_bundled()
+    return {"restart_required": True, "message": "已回退為內建版本，重新啟動後生效。"}
 
 
 # ── Quota endpoint ────────────────────────────────────────────────────────────

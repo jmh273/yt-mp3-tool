@@ -128,11 +128,12 @@ describe('DriveUploadPanel', () => {
     expect(wrapper.find('.folder-badge').text()).toBe('已上傳')
   })
 
-  it('drive.reauthRequired 時顯示重新授權按鈕並觸發 login', async () => {
+  it('drive.reauthRequired 時顯示重新授權按鈕並觸發 Drive 獨立授權', async () => {
     const drive = useDriveUploadStore()
     drive.reauthRequired = true
     const auth = useAuthStore()
-    const loginSpy = vi.spyOn(auth, 'login').mockResolvedValue(undefined)
+    // drive.file scope 不可與 youtube 混合請求，改走 /auth/login/drive 的獨立授權
+    const loginSpy = vi.spyOn(auth, 'loginDrive').mockResolvedValue(undefined)
 
     const wrapper = mount(DriveUploadPanel)
     await flushPromises()
