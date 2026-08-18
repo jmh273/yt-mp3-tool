@@ -61,6 +61,6 @@
 
 - [x] 8.1 撰寫 `frontend/e2e/verify-download-403-resilience.ts`：失敗項顯示錯誤原因、重試中狀態呈現、設定頁版本區塊
 - [x] 8.2 （實跑 run_download 全路徑：status=done，產出 E2E Probe.mp3 15,231,614 bytes，無 `n challenge solving failed`）實跑一次真實下載（非 mock）
-- [ ] 8.3 確認發行 zip 內含 `deno.exe`，且在未安裝任何 JS runtime 的環境解壓即可下載
+- [x] 8.3 （v0.24.0/v0.24.1 實測：zip 內含 deno.exe 92.9MB 與 EJS 的 core/lib.min.js；解壓後解析到自身的 deno；受管優先與內建保底在凍結環境皆有效；打包版實際下載成功 PKG Verify.mp3 15,231,520 bytes；v0.24.1 回報 yt_dlp_ejs_usable=true 證實 solver 在凍結環境可載入）確認發行 zip 內含 `deno.exe`，且在未安裝任何 JS runtime 的環境解壓即可下載
 - [x] 8.4 （後端 274 passed、前端 270 passed、vue-tsc 乾淨；順帶修掉 OAuth 改動遺留的 `DriveUploadPanel.test.ts` 失效斷言 login→loginDrive）執行完整單元測試與 `vue-tsc`
 - [x] 8.5 （6/6 PASS）執行 `verify-download-403-resilience.ts` 並確認全數 PASS
